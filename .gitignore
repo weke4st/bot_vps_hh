@@ -1,0 +1,55 @@
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+/dist/
+build/
+.eggs/
+*.egg
+.pytest_cache/
+
+# ── Virtual Environment ──────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Environment & Secrets (NEVER COMMIT) ─────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── SQLite Database & Local Data ──────────────────────────────────────────
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.sqlite*
+data/session/*
+!data/session/.gitkeep
+data/users/*
+!data/users/.gitkeep
+data/screenshots/*
+!data/screenshots/.gitkeep
+data/captcha/*
+!data/captcha/.gitkeep
+
+# ── Models & Executables (>100MB, not for git) ───────────────────────────
+models/*.gguf
+bin/
+
+# ── Frontend ─────────────────────────────────────────────────────────────
+web/node_modules/
+web/.vite/
+web/*.log
+
+# ── IDEs & Editors ───────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Operating System ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini

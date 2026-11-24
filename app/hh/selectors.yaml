@@ -1,0 +1,51 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# HH.ru UI Selectors
+#
+# All CSS / XPath selectors used to interact with hh.ru pages.
+# Keep in sync with hh.ru DOM — update here, not in Python code.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Search page ───────────────────────────────────────────────────────────
+search:
+  # URL template for vacancy search
+  url_template: "https://hh.ru/search/vacancy?text={query}&area={region}&salary={salary_from}&experience={experience}&schedule={work_format}&page={page}"
+  # Vacancy card on search results page
+  vacancy_card: "[data-qa='serp-item__title-link-wrapper'], [data-qa='serp-item__title']"
+  vacancy_link: "[data-qa='serp-item__title']"
+  vacancy_salary: "[data-qa='vacancy-serp__vacancy-compensation']"
+  vacancy_company: "[data-qa='vacancy-serp__vacancy-employer']"
+  # Pagination
+  next_page: "[data-qa='pager-next']"
+  no_results: "[data-qa='vacancy-search-results-empty']"
+
+# ── Vacancy detail page ──────────────────────────────────────────────────
+vacancy:
+  title: "[data-qa='vacancy-title']"
+  company: "[data-qa='vacancy-company-name']"
+  salary: "[data-qa='vacancy-salary-compensation-type-net'], [data-qa='vacancy-salary']"
+  description: "[data-qa='vacancy-description']"
+  apply_button: "[data-qa='vacancy-response-link-top'], [data-qa='vacancy-response-link-bottom'], [data-qa='vacancy-response-link-view']"
+  already_applied: "[data-qa='vacancy-response-already-applied'], [data-qa='vacancy-response-link-view-topic']"
+
+# ── Application form ─────────────────────────────────────────────────────
+apply_form:
+  cover_letter_toggle: "[data-qa='responded-success-attach-cover-letter'], [data-qa='vacancy-response-letter-toggle'], [data-qa='vacancy-response-popup-letter'], [data-qa*='letter'] a, [data-qa*='letter'] button, button:has-text('сопроводительное'), a:has-text('сопроводительное'), button:has-text('Добавить'), a:has-text('Добавить')"
+  cover_letter_textarea: "textarea[data-qa='vacancy-response-popup-form-letter-input'], [data-qa='vacancy-response-letter-text'], textarea[name='letter'], textarea[placeholder*='сопроводит'], [data-qa*='letter'] textarea, textarea[aria-label*='сопроводит']"
+  submit_button: "[data-qa='vacancy-response-submit-popup'], [data-qa='vacancy-response-letter-submit'], [data-qa='vacancy-response-submit'], [data-qa='vacancy-response-link-top'], [data-qa='vacancy-response-link-bottom'], button:has-text('Отправить'), button:has-text('Откликнуться'), a:has-text('Откликнуться'), a:has-text('Отправить')"
+  success_message: "[data-qa='cover-letter-after-send snackbar'], [data-qa='vacancy-response-letter-informer'], [data-qa='vacancy-response-link-view-topic'], [data-qa='vacancy-response-already-applied'], :has-text('отклик отправлен'), :has-text('Вы откликнулись'), :has-text('Отклик доставлен')"
+  extra_popup_close: "[data-qa='additional-data-collector__popup-close']"
+
+# ── CAPTCHA ───────────────────────────────────────────────────────────────
+captcha:
+  container: "[class*='HhcaptchaModal'], .HHCaptcha, [data-qa='captcha'], [data-qa='bottom-sheet-content']:has(img[src*='captcha'])"
+  image: "[data-qa='account-captcha-picture'], img[src*='captcha/picture'], img[src*='captcha'], [data-qa*='captcha-picture'], .CaptchaImage-module_hhcaptcha-picture, .HHCaptcha img"
+  input: "[data-qa='account-captcha-input'], [data-qa*='captcha-input'], input[name='captcha'], input[name*='captcha'], .HHCaptcha input, [class*='Hhcaptcha'] input, [data-qa='bottom-sheet-content'] input[type='text']"
+  submit: "[data-qa='bottom-sheet-content'] button:has-text('Отправить'), [class*='bottom-sheet'] button:has-text('Отправить'), [data-qa='captcha-submit'], button[data-qa*='submit'], [class*='HhcaptchaModal'] button:has-text('Отправить'), .HHCaptcha button:has-text('Отправить'), button:has-text('Отправить'), button:has-text('Submit'), button:has-text('Подтвердить')"
+  refresh: "[data-qa='captcha-renew-text'], [class*='captcha-renew'], button:has-text('Обновить'), a:has-text('Обновить'), .HHCaptcha .captcha__refresh"
+  language: "[data-qa='captcha-language'], button:has-text('English'), a:has-text('English')"
+  error: "[data-qa*='captcha-error'], [data-qa='account-captcha-error'], [class*='captcha__error'], [class*='HHCaptcha-error'], :has-text('Неправильный код'), :has-text('Попробуйте ещё раз'), :has-text('Попробуйте еще раз'), :has-text('Неверно')"
+
+# ── Login / Auth ──────────────────────────────────────────────────────────
+auth:
+  logged_in_indicator: "[data-qa='mainmenu_applicantProfile'], [data-qa='applicant-profile']"
+  login_button: "[data-qa='login'], [data-qa='account-login-small-screen']"

@@ -1,0 +1,32 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# HH Auto-Apply Bot — Cloud SaaS Docker Compose
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Production run on VPS (Netherlands / Ubuntu):
+#   docker compose up --build -d
+#
+# Open browser at:
+#   http://YOUR_SERVER_IP:8000 (or http://YOUR_SERVER_IP)
+# ═══════════════════════════════════════════════════════════════════════════
+
+version: "3.9"
+
+services:
+  # ── Unified SaaS Web & Bot Service ──────────────────────────────────────
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hh-saas-bot
+    ports:
+      - "8000:8000"
+      # To run directly on standard HTTP port 80, uncomment below:
+      # - "80:8000"
+    volumes:
+      - ./data:/app/data
+      - ./.env:/app/.env:ro
+    environment:
+      - HEADLESS=true
+      - LOG_LEVEL=INFO
+    restart: unless-stopped
+    shm_size: "2gb" # Chromium needs sufficient shared memory for tabs
