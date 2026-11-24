@@ -112,6 +112,10 @@ class SchedulerService:
 
     def trigger_user_now(self, user_id: int) -> None:
         """Manually trigger immediate execution for a specific user."""
+        if self.worker.is_user_running(user_id):
+            logger.info("User #%d already has an active cycle running. Not triggering another one.", user_id)
+            return
+
         self.worker.reset_stop()
         if not self._is_active:
             self.start()
@@ -130,6 +134,10 @@ class SchedulerService:
                 logger.error("Error executing manual cycle for user #%d: %s", user_id, e, exc_info=True)
 
         asyncio.create_task(_run())
+
+    def stop_user(self, user_id: int) -> None:
+        """Signal a specific user's running cycle to abort immediately."""
+        self.worker.stop_user(user_id)
 
     def stop(self) -> None:
         """Request immediate stop of worker and pause scheduler."""

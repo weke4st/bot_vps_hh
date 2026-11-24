@@ -407,6 +407,9 @@ async def toggle_user_bot(
     if new_state:
         # Trigger immediate cycle for this user so they don't wait for the next periodic tick
         scheduler_service.trigger_user_now(user.id)
+    else:
+        # Stop currently running cycle for this user immediately
+        scheduler_service.stop_user(user.id)
 
     logger.info("User #%d bot toggled: enabled=%s", user.id, new_state)
     return StandardResponse(

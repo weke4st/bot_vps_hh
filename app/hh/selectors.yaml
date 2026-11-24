@@ -29,9 +29,9 @@ vacancy:
 
 # ── Application form ─────────────────────────────────────────────────────
 apply_form:
-  cover_letter_toggle: "[data-qa='responded-success-attach-cover-letter'], [data-qa='vacancy-response-letter-toggle'], [data-qa='vacancy-response-popup-letter'], [data-qa*='letter'] a, [data-qa*='letter'] button, button:has-text('сопроводительное'), a:has-text('сопроводительное'), button:has-text('Добавить'), a:has-text('Добавить')"
-  cover_letter_textarea: "textarea[data-qa='vacancy-response-popup-form-letter-input'], [data-qa='vacancy-response-letter-text'], textarea[name='letter'], textarea[placeholder*='сопроводит'], [data-qa*='letter'] textarea, textarea[aria-label*='сопроводит']"
-  submit_button: "[data-qa='vacancy-response-submit-popup'], [data-qa='vacancy-response-letter-submit'], [data-qa='vacancy-response-submit'], [data-qa='vacancy-response-link-top'], [data-qa='vacancy-response-link-bottom'], button:has-text('Отправить'), button:has-text('Откликнуться'), a:has-text('Откликнуться'), a:has-text('Отправить')"
+  cover_letter_toggle: "[data-qa='responded-success-attach-cover-letter'], [data-qa='vacancy-response-letter-toggle'], [data-qa='vacancy-response-popup-letter'], [data-qa*='letter'] a, [data-qa*='letter'] button, button:has-text('сопроводительное'), a:has-text('сопроводительное'), [role='button']:has-text('сопроводительное'), button:has-text('Добавить'), a:has-text('Добавить')"
+  cover_letter_textarea: "textarea[data-qa='vacancy-response-popup-form-letter-input'], [data-qa='vacancy-response-letter-text'], [data-qa*='magritte-textarea'], textarea[name='letter'], textarea[placeholder*='сопроводит'], [data-qa*='letter'] textarea, textarea[aria-label*='сопроводит'], textarea"
+  submit_button: "[data-qa='vacancy-response-letter-submit'], [data-qa='vacancy-response-submit-popup'], [data-qa='vacancy-response-submit'], [data-qa*='letter-submit'], button:has-text('Прикрепить к отклику'), button:has-text('Прикрепить'), button:has-text('Сохранить'), button:has-text('Отправить письмо'), button:has-text('Отправить'), button:has-text('Откликнуться'), a:has-text('Откликнуться'), a:has-text('Отправить')"
   success_message: "[data-qa='cover-letter-after-send snackbar'], [data-qa='vacancy-response-letter-informer'], [data-qa='vacancy-response-link-view-topic'], [data-qa='vacancy-response-already-applied'], :has-text('отклик отправлен'), :has-text('Вы откликнулись'), :has-text('Отклик доставлен')"
   extra_popup_close: "[data-qa='additional-data-collector__popup-close']"
 

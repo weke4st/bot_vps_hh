@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from patchright.async_api import Page
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.state import bot_state
@@ -23,7 +24,7 @@ from app.captcha.solver import PaddleOCRSolver
 from app.config import get_settings
 from app.cover_letter.generator import CoverLetterGenerator
 from app.hh.questionnaire import QuestionnaireSolver
-from app.db.models import ApplicationStatus, Vacancy, VacancyStatus
+from app.db.models import Application, ApplicationStatus, Vacancy, VacancyStatus
 from app.db.repositories import (
     create_application,
     get_setting,
@@ -196,7 +197,7 @@ class HHClient:
         return False
 
     async def apply_to_vacancy(
-        self, session: AsyncSession, vacancy: Vacancy
+        self, session: AsyncSession, vacancy: Vacancy, stop_event: asyncio.Event | None = None
     ) -> bool:
         """Process a single vacancy: inspect, generate letter, submit application, solve captcha."""
         page = await self.browser_manager.get_page()
@@ -355,9 +356,6 @@ class HHClient:
             for survey_btn_sel in [
                 "button:has-text('Сохранить и продолжить')",
                 "[data-qa='additional-data-collector__popup-close']",
-                "[class*='bottom-sheet'] button[aria-label*='закрыть']",
-                "[class*='bottom-sheet'] button[aria-label*='Закрыть']",
-                "[data-qa='additional-data-collector__popup-close']",
             ]:
                 try:
                     s_btn = await page.query_selector(survey_btn_sel)
@@ -467,11 +465,60 @@ class HHClient:
                 if letter_input:
                     logger.info("Entering cover letter into textarea...")
                     await human_typing(page, letter_input, cover_letter)
-                    await random_pause(min_s=0.8, max_s=1.8)
+                    await random_pause(min_s=0.8, max_s=1.5)
 
-                    # Submit the letter
-                    submit_btn = await page.query_selector(submit_sel)
-                    if submit_btn and await submit_btn.is_visible():
+                    # Ensure text is properly recognized by React/Magritte state
+                    try:
+                        cur_val = await letter_input.input_value()
+                        if not cur_val or len(cur_val.strip()) < 10:
+                            logger.info("Textarea value short/empty after typing, applying fill()...")
+                            await letter_input.fill(cover_letter)
+                        await letter_input.dispatch_event("input")
+                        await letter_input.dispatch_event("change")
+                    except Exception as ev_err:
+                        logger.debug("Failed to dispatch input/change events: %s", ev_err)
+
+                    # Submit the letter with exhaustive selectors
+                    submit_candidates = [
+                        "[data-qa='vacancy-response-letter-submit']",
+                        "[data-qa='vacancy-response-submit-popup']",
+                        "[data-qa='vacancy-response-submit']",
+                        "[data-qa*='letter-submit']",
+                        "[data-qa*='bottom-sheet'] button:has-text('Прикрепить')",
+                        "[data-qa*='bottom-sheet'] button:has-text('Отправить')",
+                        "[data-qa*='bottom-sheet'] button:has-text('Сохранить')",
+                        "[data-qa*='bottom-sheet'] button:has-text('Откликнуться')",
+                        "[class*='bottom-sheet'] button:has-text('Прикрепить')",
+                        "[class*='bottom-sheet'] button:has-text('Отправить')",
+                        "[class*='bottom-sheet'] button:has-text('Сохранить')",
+                        "[class*='bottom-sheet'] button:has-text('Откликнуться')",
+                        "[data-qa*='popup'] button:has-text('Прикрепить')",
+                        "[data-qa*='popup'] button:has-text('Отправить')",
+                        "button:has-text('Прикрепить к отклику')",
+                        "button:has-text('Прикрепить')",
+                        "button:has-text('Сохранить')",
+                        "button:has-text('Отправить письмо')",
+                        "button:has-text('Отправить отклик')",
+                        "button:has-text('Отправить')",
+                        "button:has-text('Откликнуться')",
+                        "button[type='submit']",
+                    ]
+
+                    submit_btn = None
+                    for cand_sel in submit_candidates:
+                        try:
+                            btn = await page.query_selector(cand_sel)
+                            if btn and await btn.is_visible():
+                                submit_btn = btn
+                                break
+                        except Exception:
+                            continue
+
+                    if submit_btn:
+                        try:
+                            await submit_btn.scroll_into_view_if_needed()
+                        except Exception:
+                            pass
                         await human_click(page, submit_btn)
                         await random_pause(min_s=1.5, max_s=3.0)
                         logger.info("✓ Cover letter submitted successfully for #%s", vacancy.hh_id)
@@ -497,6 +544,18 @@ class HHClient:
                         "Cover letter input not found for vacancy #%s.",
                         vacancy.hh_id,
                     )
+
+                if not letter_attached:
+                    logger.warning(
+                        "Vacancy #%s: Cover letter was generated but could NOT be attached on hh.ru! Updating application record.",
+                        vacancy.hh_id,
+                    )
+                    await session.execute(
+                        update(Application)
+                        .where(Application.id == application.id)
+                        .values(cover_letter=f"[НЕ ПРИКРЕПЛЕНО К HH.RU]\n\n{cover_letter}")
+                    )
+                    await session.commit()
 
             # 10. STRICT VERIFICATION & SUBMISSION LOOP
             # On hh.ru, solving a CAPTCHA bottom sheet does NOT auto-submit the underlying form!
@@ -629,7 +688,7 @@ class HHClient:
             bot_state.set_running(
                 action="Пауза безопасности между откликами (мин. 15 сек)..."
             )
-            delay = await delay_between_applies()
+            delay = await delay_between_applies(stop_event=stop_event)
             logger.info("Safety cooldown delay completed: %.1f seconds", delay)
             return True
 

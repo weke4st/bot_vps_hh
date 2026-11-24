@@ -31,11 +31,25 @@ class BotWorker:
         self.settings = get_settings()
         self.rate_limiter = RateLimiter()
         self.stop_event = asyncio.Event()
+        self._user_stop_events: dict[int, asyncio.Event] = {}
+        self._running_users: set[int] = set()
+        self._cycle_lock = asyncio.Lock()
+
+    def is_user_running(self, user_id: int) -> bool:
+        """Check if a cycle is already currently running for a given user."""
+        return user_id in self._running_users
 
     def request_stop(self) -> None:
         """Signal worker to abort current tasks gracefully within 5 seconds."""
         logger.info("Worker stop requested")
         self.stop_event.set()
+
+    def stop_user(self, user_id: int) -> None:
+        """Signal worker to abort a specific user's running cycle immediately."""
+        evt = self._user_stop_events.get(user_id)
+        if evt:
+            evt.set()
+            logger.info("User #%d: Stop signal delivered", user_id)
 
     def reset_stop(self) -> None:
         """Clear stop flag for new runs."""
@@ -47,49 +61,66 @@ class BotWorker:
             logger.info("Cycle skipped: stop event is set")
             return
 
-        async with get_session() as session:
-            active_users = await list_active_bot_users(session)
-
-        if not active_users:
-            logger.info("No active bot users found to process in this cycle.")
+        if self._cycle_lock.locked():
+            logger.info("Cycle skipped: another run_cycle is currently in progress")
             return
 
-        logger.info("Starting automated cycle for %d active users...", len(active_users))
+        async with self._cycle_lock:
+            async with get_session() as session:
+                active_users = await list_active_bot_users(session)
 
-        for user in active_users:
-            if self.stop_event.is_set():
-                break
+            if not active_users:
+                logger.info("No active bot users found to process in this cycle.")
+                return
 
-            try:
-                await self.run_user_cycle(user)
-            except Exception as e:
-                logger.error("Error running cycle for user #%d (%s): %s", user.id, user.email, e, exc_info=True)
-                async with get_session() as session:
-                    await update_user_bot_state(
-                        session, user.id, last_error=str(e), bot_status="error", current_action=f"Ошибка: {e}"
-                    )
-                    await session.commit()
+            logger.info("Starting automated cycle for %d active users...", len(active_users))
+
+            for user in active_users:
+                if self.stop_event.is_set():
+                    break
+
+                if self.is_user_running(user.id):
+                    logger.info("User #%d (%s) already has a cycle running. Skipping in scheduled tick.", user.id, user.email)
+                    continue
+
+                try:
+                    await self.run_user_cycle(user)
+                except Exception as e:
+                    logger.error("Error running cycle for user #%d (%s): %s", user.id, user.email, e, exc_info=True)
+                    async with get_session() as session:
+                        await update_user_bot_state(
+                            session, user.id, last_error=str(e), bot_status="error", current_action=f"Ошибка: {e}"
+                        )
+                        await session.commit()
 
     async def run_user_cycle(self, user: User) -> None:
         """Execute automated search and apply cycle for a single user."""
-        logger.info("Processing cycle for user #%d (%s)...", user.id, user.email)
+        if user.id in self._running_users:
+            logger.info("User #%d (%s) is already executing a cycle. Skipping duplicate call.", user.id, user.email)
+            return
 
-        async with get_session() as session:
-            await update_user_bot_state(
-                session, user.id, bot_status="running", current_action="Проверка лимитов..."
-            )
-            await session.commit()
-
-        browser_manager = BrowserManager(user_id=user.id, proxy_url=user.proxy_url)
-        client = HHClient(
-            browser_manager,
-            user_id=user.id,
-            auth_key=user.gigachat_auth_key,
-            scope=user.gigachat_scope,
-            target_salary=user.target_salary,
-        )
-
+        self._running_users.add(user.id)
+        user_stop_event = asyncio.Event()
+        self._user_stop_events[user.id] = user_stop_event
+        browser_manager = None
         try:
+            logger.info("Processing cycle for user #%d (%s)...", user.id, user.email)
+
+            async with get_session() as session:
+                await update_user_bot_state(
+                    session, user.id, bot_status="running", current_action="Проверка лимитов..."
+                )
+                await session.commit()
+
+            browser_manager = BrowserManager(user_id=user.id, proxy_url=user.proxy_url)
+            client = HHClient(
+                browser_manager,
+                user_id=user.id,
+                auth_key=user.gigachat_auth_key,
+                scope=user.gigachat_scope,
+                target_salary=user.target_salary,
+            )
+
             # 0. Check GigaChat API key
             effective_key = user.gigachat_auth_key or self.settings.gigachat_auth_key.get_secret_value()
             if not effective_key:
@@ -123,7 +154,8 @@ class BotWorker:
             max_pages_per_cycle = 5
 
             while len(pending_vacancies) < 50 and pages_scanned < max_pages_per_cycle:
-                if self.stop_event.is_set():
+                if self.stop_event.is_set() or user_stop_event.is_set():
+                    logger.info("User #%d: Stop requested during search scanning.", user.id)
                     break
 
                 async with get_session() as session:
@@ -156,8 +188,17 @@ class BotWorker:
 
             consecutive_errors = 0
             for vacancy in pending_vacancies:
-                if self.stop_event.is_set():
+                if self.stop_event.is_set() or user_stop_event.is_set():
+                    logger.info("User #%d: Stop requested, aborting vacancy loop.", user.id)
                     break
+
+                # Double check DB flag: did user toggle bot off on the website?
+                async with get_session() as session:
+                    from app.db.repositories import get_user_by_id
+                    current_user = await get_user_by_id(session, user.id)
+                    if not current_user or not current_user.bot_enabled:
+                        logger.info("User #%d: bot disabled on website (bot_enabled=False). Stopping cycle immediately.", user.id)
+                        break
 
                 # Re-check rate limits
                 async with get_session() as session:
@@ -167,7 +208,7 @@ class BotWorker:
                         break
 
                 async with get_session() as session:
-                    success = await client.apply_to_vacancy(session, vacancy)
+                    success = await client.apply_to_vacancy(session, vacancy, stop_event=user_stop_event)
 
                 if success:
                     applied_in_this_cycle += 1
@@ -185,15 +226,36 @@ class BotWorker:
 
             now = datetime.now(timezone.utc)
             async with get_session() as session:
-                await update_user_bot_state(
-                    session,
-                    user.id,
-                    bot_status="idle",
-                    current_action="Ожидание следующего цикла",
-                    last_run_at=now,
-                    last_error=None,
+                from app.db.repositories import get_user_by_id
+                current_user = await get_user_by_id(session, user.id)
+                is_still_enabled = (
+                    current_user
+                    and current_user.bot_enabled
+                    and not user_stop_event.is_set()
+                    and not self.stop_event.is_set()
                 )
+                if is_still_enabled:
+                    await update_user_bot_state(
+                        session,
+                        user.id,
+                        bot_status="idle",
+                        current_action="Ожидание следующего цикла",
+                        last_run_at=now,
+                        last_error=None,
+                    )
+                else:
+                    await update_user_bot_state(
+                        session,
+                        user.id,
+                        bot_enabled=False,
+                        bot_status="stopped",
+                        current_action="Остановлен пользователем",
+                        last_run_at=now,
+                    )
                 await session.commit()
 
         finally:
-            await browser_manager.close()
+            self._running_users.discard(user.id)
+            self._user_stop_events.pop(user.id, None)
+            if browser_manager:
+                await browser_manager.close()

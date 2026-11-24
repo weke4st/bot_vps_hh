@@ -47,8 +47,8 @@ async def random_pause(
     await asyncio.sleep(clamped)
 
 
-async def delay_between_applies() -> float:
-    """Enforce minimum delay between applications (at least 15s, randomized 15-30s)."""
+async def delay_between_applies(stop_event: asyncio.Event | None = None) -> float:
+    """Enforce minimum delay between applications (at least 15s, randomized 15-30s), aborting early if stop_event is set."""
     settings = get_settings()
     min_delay = max(15.0, float(settings.min_delay_between_applies_sec))
     max_delay = max(min_delay + 5.0, float(settings.max_delay_between_applies_sec))
@@ -57,7 +57,13 @@ async def delay_between_applies() -> float:
     span = max_delay - min_delay
     raw = random.expovariate(1.5 / span) if span > 0 else 0
     actual_delay = min_delay + min(span, raw)
-    await asyncio.sleep(actual_delay)
+    if stop_event is not None:
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=actual_delay)
+        except asyncio.TimeoutError:
+            pass
+    else:
+        await asyncio.sleep(actual_delay)
     return actual_delay
 
 
