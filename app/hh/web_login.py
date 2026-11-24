@@ -108,13 +108,29 @@ async def start_hh_login(user_id: int, phone: str, proxy_url: str | None = None)
         await page.goto("https://hh.ru/account/login", wait_until="domcontentloaded")
         await random_pause(min_s=1.5, max_s=2.5)
 
+        # 0. Handle initial account-type screen (Applicant / Employer)
+        # hh.ru presents a selection screen: "Кем вы хотите войти: Я ищу работу / Я ищу сотрудников"
+        type_btn = await page.query_selector(
+            "button[data-qa='submit-button']:has-text('Войти'), button:has-text('Войти')"
+        )
+        if type_btn and await type_btn.is_visible():
+            logger.info("Account type screen detected on hh.ru for user #%d. Proceeding as applicant...", user_id)
+            applicant_radio = await page.query_selector("[data-qa*='account-type-card-APPLICANT']")
+            if applicant_radio and await applicant_radio.is_visible():
+                await human_click(page, applicant_radio)
+                await asyncio.sleep(0.3)
+            await human_click(page, type_btn)
+            await random_pause(min_s=1.2, max_s=2.2)
+
         # 1. Switch to phone tab if present
         phone_tab = await page.query_selector(
             "[data-qa*='credential-type-phone'], [data-qa='account-login-tab-phone'], button:has-text('Телефон')"
         )
         if phone_tab and await phone_tab.is_visible():
-            await human_click(page, phone_tab)
-            await asyncio.sleep(0.5)
+            is_checked = await phone_tab.get_attribute("checked")
+            if not is_checked:
+                await human_click(page, phone_tab)
+                await asyncio.sleep(0.5)
 
         # 2. Find phone input
         phone_input = None
@@ -133,19 +149,27 @@ async def start_hh_login(user_id: int, phone: str, proxy_url: str | None = None)
                 break
 
         if not phone_input:
+            # Capture debug screenshot
+            try:
+                err_path = Path("data/screenshots") / f"login_err_{user_id}.png"
+                err_path.parent.mkdir(parents=True, exist_ok=True)
+                await page.screenshot(path=str(err_path))
+                logger.error("Phone input missing. Debug screenshot saved: %s, URL: %s", err_path, page.url)
+            except Exception:
+                pass
             raise RuntimeError("Поле ввода телефона не найдено на странице hh.ru")
 
         # Type the phone number
         await human_click(page, phone_input)
-        # If input has national number format (+7 is already outside), type national digits
-        ph_text = (await phone_input.get_attribute("placeholder") or "").lower()
-        to_type = national_digits if ("+7" in await page.inner_text("body") or len(national_digits) == 10) else phone
+        # If input is national number input (+7 is outside), type 10 digits
+        to_type = national_digits if len(national_digits) == 10 else phone
         await human_typing(page, phone_input, to_type)
         await random_pause(min_s=0.8, max_s=1.5)
 
         # 3. Click Submit / Next
         submit_btn = None
         for sel in [
+            "button[data-qa='submit-button']:has-text('Дальше')",
             "[data-qa='submit-button']",
             "[data-qa='account-signup-submit']",
             "button[type='submit']",
@@ -223,9 +247,12 @@ async def verify_hh_code(user_id: int, code: str) -> dict[str, Any]:
         else:
             code_input = None
             for sel in [
+                "[data-qa='magritte-pincode-input-field']",
+                "[data-qa*='pincode-input']",
                 "[data-qa*='code-input']",
                 "[data-qa*='sms-code']",
                 "input[autocomplete='one-time-code']",
+                "input[name='otp']",
                 "input[name*='code']",
                 "input[type='tel']",
                 "input[type='number']",
