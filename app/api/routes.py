@@ -402,6 +402,10 @@ async def toggle_user_bot(
     )
     await session.commit()
 
+    if new_state:
+        # Trigger immediate cycle for this user so they don't wait for the next periodic tick
+        scheduler_service.trigger_user_now(user.id)
+
     logger.info("User #%d bot toggled: enabled=%s", user.id, new_state)
     return StandardResponse(
         success=True,
@@ -656,6 +660,10 @@ async def websocket_endpoint(
             {"type": "bot_status", "data": bot_state.snapshot().model_dump(mode="json")}
         )
         while True:
-            await websocket.receive_text()
+            try:
+                # 20-second keepalive to prevent idle disconnects across firewalls / browsers
+                await asyncio.wait_for(websocket.receive_text(), timeout=20.0)
+            except asyncio.TimeoutError:
+                await websocket.send_json({"type": "ping"})
     except (WebSocketDisconnect, Exception):
         ws_manager.disconnect(websocket)

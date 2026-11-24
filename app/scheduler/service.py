@@ -104,10 +104,32 @@ class SchedulerService:
         )
 
     def trigger_now(self) -> None:
-        """Manually trigger immediate execution of cycle."""
+        """Manually trigger immediate execution of cycle across all active users."""
+        self.worker.reset_stop()
         if not self._is_active:
             self.start()
         asyncio.create_task(self.worker.run_cycle())
+
+    def trigger_user_now(self, user_id: int) -> None:
+        """Manually trigger immediate execution for a specific user."""
+        self.worker.reset_stop()
+        if not self._is_active:
+            self.start()
+
+        async def _run() -> None:
+            try:
+                from app.db.database import get_session
+                from app.db.repositories import get_user_by_id
+
+                logger.info("Manually triggering cycle for user #%d...", user_id)
+                async with get_session() as session:
+                    user = await get_user_by_id(session, user_id)
+                if user and user.bot_enabled and user.hh_is_connected:
+                    await self.worker.run_user_cycle(user)
+            except Exception as e:
+                logger.error("Error executing manual cycle for user #%d: %s", user_id, e, exc_info=True)
+
+        asyncio.create_task(_run())
 
     def stop(self) -> None:
         """Request immediate stop of worker and pause scheduler."""
