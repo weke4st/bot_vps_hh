@@ -378,6 +378,17 @@ async def toggle_user_bot(
             detail="Сначала подключите аккаунт hh.ru через веб-форму",
         )
 
+    settings = get_settings()
+    has_key = bool(
+        (user.gigachat_auth_key and user.gigachat_auth_key.strip())
+        or (settings.gigachat_auth_key and settings.gigachat_auth_key.get_secret_value())
+    )
+    if not has_key and not user.bot_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Укажите ваш личный GigaChat Authorization Key в разделе 'Настройки' перед запуском бота",
+        )
+
     new_state = not user.bot_enabled
     new_status = "idle" if new_state else "stopped"
     action = "Ожидание запуска" if new_state else "Остановлен"
@@ -545,6 +556,40 @@ async def reset_user_vacancies(
         success=True,
         message=f"Сброшено {res_vac.rowcount} вакансий со статусом 'manual' обратно в 'new'.",
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 4. Resume Management
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/resume", response_model=ResumeResponse, summary="Get candidate resume text")
+async def get_resume(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session_dep),
+) -> ResumeResponse:
+    """Retrieve candidate resume stored in database settings for current user."""
+    text = await get_setting(session, user.id, "resume_text")
+    if not text:
+        text = await get_setting(session, "resume_text") or ""
+    updated = await get_setting(session, user.id, "resume_updated_at")
+    return ResumeResponse(text=text, updated_at=updated)
+
+
+@router.put("/resume", response_model=StandardResponse, summary="Update candidate resume text")
+async def update_resume(
+    payload: ResumeUpdateRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session_dep),
+) -> StandardResponse:
+    """Save candidate resume text for current user."""
+    await set_setting(session, user.id, "resume_text", payload.text)
+    await set_setting(
+        session, user.id, "resume_updated_at", datetime.now(timezone.utc).isoformat()
+    )
+    await session.commit()
+    logger.info("Resume text updated for user #%d (%d characters)", user.id, len(payload.text))
+    return StandardResponse(message="Резюме успешно сохранено")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

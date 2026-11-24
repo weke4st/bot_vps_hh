@@ -250,9 +250,13 @@ class HHClient:
             await imitate_reading(page, desc_el)
 
             # 4. Generate cover letter
-            resume_text = await get_setting(session, "resume_text") or ""
+            resume_text = (
+                await get_setting(session, self.user_id, "resume_text")
+                or await get_setting(session, "resume_text")
+                or ""
+            )
             if not resume_text:
-                logger.warning("No candidate resume configured! Set resume via /api/resume.")
+                logger.warning("No candidate resume configured for user #%d! Set resume via web UI.", self.user_id)
 
             bot_state.set_running(
                 action="Генерация сопроводительного письма (LLM)",
