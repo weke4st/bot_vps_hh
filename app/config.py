@@ -5,6 +5,7 @@ All secrets and tunables are read from environment variables / .env file.
 
 from __future__ import annotations
 
+import secrets
 from pathlib import Path
 from typing import Literal
 
@@ -38,7 +39,10 @@ class Settings(BaseSettings):
     debug: bool = False
     log_level: str = "INFO"
     api_token: SecretStr = Field(default=SecretStr("changeme"), description="Bearer token for API auth")
-    jwt_secret: str = "hh-bot-super-secret-jwt-key-change-in-production"
+    jwt_secret: str = Field(
+        default="hh-bot-super-secret-jwt-key-change-in-production",
+        validate_default=True,
+    )
     default_proxy: str | None = None  # e.g. "http://user:pass@proxy-server:port" for cloud VPS in Netherlands
 
     # ── Database ──────────────────────────────────────────────────────────
@@ -119,6 +123,27 @@ class Settings(BaseSettings):
         if v.startswith("sqlite") and ":///" not in v:
             v = v.replace("://", ":///", 1)
         return v
+
+    @field_validator("jwt_secret", mode="before")
+    @classmethod
+    def _ensure_jwt_secret(cls, v: str) -> str:
+        """Replace default placeholder JWT secret with a persistent random secret in data/.jwt_secret."""
+        default_placeholder = "hh-bot-super-secret-jwt-key-change-in-production"
+        if v and v != default_placeholder:
+            return v
+        secret_file = DATA_DIR / ".jwt_secret"
+        try:
+            if secret_file.exists():
+                existing = secret_file.read_text(encoding="utf-8").strip()
+                if len(existing) >= 32:
+                    return existing
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            generated = secrets.token_hex(32)
+            secret_file.write_text(generated, encoding="utf-8")
+            return generated
+        except Exception:
+            # Fallback to ephemeral strong secret in memory if filesystem is read-only
+            return secrets.token_hex(32)
 
 
 # Singleton-like accessor --------------------------------------------------

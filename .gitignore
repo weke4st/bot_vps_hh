@@ -25,6 +25,7 @@ data/*.db
 data/*.db-wal
 data/*.db-shm
 data/*.sqlite*
+data/.jwt_secret
 data/session/*
 !data/session/.gitkeep
 data/users/*
