@@ -128,7 +128,13 @@ class SchedulerService:
                 logger.info("Manually triggering cycle for user #%d...", user_id)
                 async with get_session() as session:
                     user = await get_user_by_id(session, user_id)
-                if user and user.bot_enabled and user.hh_is_connected:
+                if (
+                    user
+                    and user.bot_enabled
+                    and user.hh_is_connected
+                    and user.is_active
+                    and getattr(user, "approval_status", "approved") == "approved"
+                ):
                     await self.worker.run_user_cycle(user)
             except Exception as e:
                 logger.error("Error executing manual cycle for user #%d: %s", user_id, e, exc_info=True)

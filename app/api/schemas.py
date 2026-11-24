@@ -26,11 +26,12 @@ class StandardResponse(BaseModel):
 
 
 class UserRegisterRequest(BaseModel):
-    """User registration payload."""
+    """User registration / access request payload."""
 
     email: str
     password: str = Field(min_length=6)
     full_name: str = ""
+    note: str = Field(default="", max_length=500)
 
 
 class UserLoginRequest(BaseModel):
@@ -46,6 +47,9 @@ class UserResponse(BaseModel):
     id: int
     email: str
     full_name: str
+    is_active: bool = True
+    is_admin: bool = False
+    approval_status: str = "approved"
     hh_phone: str | None = None
     hh_is_connected: bool = False
     selected_resume_id: str | None = None
@@ -63,11 +67,27 @@ class UserResponse(BaseModel):
 
 
 class AuthTokenResponse(BaseModel):
-    """JWT Token response upon login/register."""
+    """JWT Token response upon login."""
 
     access_token: str
     token_type: str = "bearer"
     user: UserResponse
+
+
+class RegisterResponse(BaseModel):
+    """Response from /auth/register (either immediate bootstrap admin or pending approval)."""
+
+    status: Literal["approved", "pending"]
+    message: str
+    access_token: str | None = None
+    token_type: str = "bearer"
+    user: UserResponse | None = None
+
+
+class AuthConfigResponse(BaseModel):
+    """Public authentication configuration (mode of registration)."""
+
+    registration_mode: Literal["first_admin", "request", "closed"]
 
 
 class HHLoginStartRequest(BaseModel):
@@ -346,3 +366,70 @@ class LogsResponse(BaseModel):
 
     logs: list[LogEntry]
     total: int
+
+
+# ---------------------------------------------------------------------------
+# Admin Panel
+# ---------------------------------------------------------------------------
+
+
+class AdminUserItem(BaseModel):
+    """Detailed user item visible in Admin Panel."""
+
+    id: int
+    email: str
+    full_name: str
+    is_active: bool
+    is_admin: bool
+    approval_status: str
+    registration_note: str | None = None
+    hh_phone: str | None = None
+    hh_is_connected: bool
+    bot_enabled: bool
+    bot_status: str
+    current_action: str
+    search_query: str
+    has_gigachat_key: bool
+    has_proxy: bool
+    applications_count: int = 0
+    last_run_at: datetime | None = None
+    created_at: datetime
+    approved_at: datetime | None = None
+
+
+class AdminOverviewSummary(BaseModel):
+    """Platform-wide overview metrics for Admin Panel."""
+
+    total_users: int
+    pending_count: int
+    active_bots_count: int
+    total_applications: int
+
+
+class AdminUsersListResponse(BaseModel):
+    """Admin users management payload."""
+
+    users: list[AdminUserItem]
+    summary: AdminOverviewSummary
+    allow_registration_requests: bool
+
+
+class AdminCreateUserRequest(BaseModel):
+    """Admin manual user creation payload."""
+
+    email: str
+    password: str = Field(min_length=6)
+    full_name: str = ""
+    is_admin: bool = False
+
+
+class AdminResetPasswordRequest(BaseModel):
+    """Admin password reset payload."""
+
+    password: str = Field(min_length=6)
+
+
+class AdminSettingsUpdateRequest(BaseModel):
+    """Admin platform access policy settings."""
+
+    allow_registration_requests: bool

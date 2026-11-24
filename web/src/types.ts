@@ -138,6 +138,9 @@ export interface UserProfile {
   id: number;
   email: string;
   full_name: string;
+  is_active: boolean;
+  is_admin: boolean;
+  approval_status: string;
   hh_phone?: string | null;
   hh_is_connected: boolean;
   selected_resume_id?: string | null;
@@ -164,4 +167,48 @@ export interface LogEntry {
   level: string;
   message: string;
   logger: string;
+}
+
+export type RegistrationMode = "first_admin" | "request" | "closed";
+
+export interface RegisterResult {
+  status: "approved" | "pending";
+  message: string;
+  access_token?: string | null;
+  user?: UserProfile | null;
+}
+
+export interface AdminUserItem {
+  id: number;
+  email: string;
+  full_name: string;
+  is_active: boolean;
+  is_admin: boolean;
+  approval_status: "pending" | "approved" | "rejected" | string;
+  registration_note?: string | null;
+  hh_phone?: string | null;
+  hh_is_connected: boolean;
+  bot_enabled: boolean;
+  bot_status: string;
+  current_action: string;
+  search_query: string;
+  has_gigachat_key: boolean;
+  has_proxy: boolean;
+  applications_count: number;
+  last_run_at?: string | null;
+  created_at: string;
+  approved_at?: string | null;
+}
+
+export interface AdminOverviewSummary {
+  total_users: number;
+  pending_count: number;
+  active_bots_count: number;
+  total_applications: number;
+}
+
+export interface AdminUsersListResponse {
+  users: AdminUserItem[];
+  summary: AdminOverviewSummary;
+  allow_registration_requests: boolean;
 }

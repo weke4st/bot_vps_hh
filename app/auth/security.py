@@ -104,14 +104,62 @@ async def get_current_user(
     result = await session.execute(stmt)
     user = result.scalar_one_or_none()
 
-    if not user or not user.is_active:
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Пользователь не найден или заблокирован",
+            detail="Пользователь не найден",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    approval = getattr(user, "approval_status", "approved")
+    if approval == "pending":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Заявка на доступ ожидает одобрения администратора",
+        )
+    if approval == "rejected":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Заявка на регистрацию отклонена администратором",
+        )
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Аккаунт заблокирован администратором",
+        )
+
     return user
+
+
+async def get_current_admin(user: User = Depends(get_current_user)) -> User:
+    """FastAPI dependency requiring administrator privileges."""
+    if not user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Доступ разрешён только администратору",
+        )
+    return user
+
+
+async def authenticate_ws_user(
+    token: str | None,
+    session: AsyncSession,
+) -> User | None:
+    """Validate WebSocket JWT token and verify user is active and approved."""
+    if not token:
+        return None
+    try:
+        payload = decode_access_token(token)
+        user_id = payload.get("sub")
+        if not user_id:
+            return None
+        stmt = select(User).where(User.id == int(user_id))
+        user = (await session.execute(stmt)).scalar_one_or_none()
+        if not user or not user.is_active or getattr(user, "approval_status", "approved") != "approved":
+            return None
+        return user
+    except Exception:
+        return None
 
 
 async def get_optional_user(

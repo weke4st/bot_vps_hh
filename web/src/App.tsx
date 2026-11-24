@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from "react";
 import {
+  fetchAdminUsers,
   fetchBotStatus,
   fetchCurrentUser,
   logoutUser,
   toggleUserBot,
 } from "./api";
+import { AdminPanel } from "./components/AdminPanel";
 import { Applications } from "./components/Applications";
 import { AuthModal } from "./components/AuthModal";
 import { Dashboard } from "./components/Dashboard";
@@ -19,39 +21,61 @@ export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState<string>("dashboard");
   const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [pendingAdminCount, setPendingAdminCount] = useState<number>(0);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [isHHWizardOpen, setIsHHWizardOpen] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
 
+  const refreshAdminCount = (user: UserProfile | null) => {
+    if (user?.is_admin) {
+      fetchAdminUsers()
+        .then((res) => setPendingAdminCount(res.summary.pending_count))
+        .catch(() => {});
+    } else {
+      setPendingAdminCount(0);
+    }
+  };
+
   // Check auth & fetch user profile
   const reloadUserProfile = async () => {
     try {
-      const user = await fetchCurrentUser();
+      const user: UserProfile = await fetchCurrentUser();
       setCurrentUser(user);
       setIsAuthModalOpen(false);
+      refreshAdminCount(user);
+      fetchBotStatus()
+        .then(setBotStatus)
+        .catch(() => {});
     } catch (err) {
       setCurrentUser(null);
+      setPendingAdminCount(0);
       setIsAuthModalOpen(true);
     }
   };
 
   useEffect(() => {
     reloadUserProfile();
-    fetchBotStatus()
-      .then(setBotStatus)
-      .catch((err) => console.error("Initial status check failed", err));
   }, []);
 
-  // Establish persistent WebSocket connection for real-time updates
+  // Establish persistent WebSocket connection only when authenticated
   useEffect(() => {
+    if (!currentUser) {
+      setWsConnected(false);
+      return;
+    }
+
     let ws: WebSocket | null = null;
     let reconnectTimer: any = null;
+    let isCancelled = false;
 
     const connectWS = () => {
+      if (isCancelled) return;
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const host = window.location.host;
-      const wsUrl = `${protocol}//${host}/api/ws`;
+      const token = localStorage.getItem("hh_bot_token") || "";
+      const query = token ? `?token=${encodeURIComponent(token)}` : "";
+      const wsUrl = `${protocol}//${host}/api/ws${query}`;
 
       ws = new WebSocket(wsUrl);
 
@@ -76,7 +100,9 @@ export const App: React.FC = () => {
 
       ws.onclose = () => {
         setWsConnected(false);
-        reconnectTimer = setTimeout(connectWS, 3000);
+        if (!isCancelled) {
+          reconnectTimer = setTimeout(connectWS, 3000);
+        }
       };
 
       ws.onerror = () => {
@@ -87,17 +113,16 @@ export const App: React.FC = () => {
     connectWS();
 
     return () => {
+      isCancelled = true;
       if (ws) ws.close();
       if (reconnectTimer) clearTimeout(reconnectTimer);
     };
-  }, []);
+  }, [currentUser?.id]);
 
   const handleToggleBot = async () => {
     try {
       await toggleUserBot();
       await reloadUserProfile();
-      const updated = await fetchBotStatus();
-      setBotStatus(updated);
     } catch (err: any) {
       console.error(err);
       alert(err.message || "Не удалось переключить состояние бота");
@@ -107,6 +132,9 @@ export const App: React.FC = () => {
   const handleLogout = async () => {
     await logoutUser();
     setCurrentUser(null);
+    setPendingAdminCount(0);
+    setLogs([]);
+    setCurrentTab("dashboard");
     setIsAuthModalOpen(true);
   };
 
@@ -117,6 +145,7 @@ export const App: React.FC = () => {
         onTabChange={setCurrentTab}
         botStatus={botStatus}
         currentUser={currentUser}
+        pendingAdminCount={pendingAdminCount}
         onToggleBot={handleToggleBot}
         onOpenHHLogin={() => setIsHHWizardOpen(true)}
         onLogout={handleLogout}
@@ -163,17 +192,27 @@ export const App: React.FC = () => {
             connected={wsConnected}
           />
         )}
+        {currentTab === "admin" && currentUser?.is_admin && (
+          <AdminPanel
+            currentUser={currentUser}
+            onPendingCountChange={setPendingAdminCount}
+          />
+        )}
       </main>
 
-      {/* Auth Modal (Login / Register) */}
+      {/* Auth Modal (Login / Request Access) */}
       <AuthModal
         isOpen={isAuthModalOpen}
         onClose={() => {
           if (currentUser) setIsAuthModalOpen(false);
         }}
-        onSuccess={(user) => {
+        onSuccess={(user: UserProfile) => {
           setCurrentUser(user);
           setIsAuthModalOpen(false);
+          refreshAdminCount(user);
+          fetchBotStatus()
+            .then(setBotStatus)
+            .catch(() => {});
         }}
       />
 

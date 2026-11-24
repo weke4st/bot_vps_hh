@@ -10,6 +10,7 @@ import {
   Phone,
   Play,
   Settings as SettingsIcon,
+  Shield,
   Terminal,
   User,
 } from "lucide-react";
@@ -20,6 +21,7 @@ interface NavbarProps {
   onTabChange: (tab: string) => void;
   botStatus: BotStatus | null;
   currentUser: UserProfile | null;
+  pendingAdminCount?: number;
   onToggleBot: () => void;
   onOpenHHLogin: () => void;
   onLogout: () => void;
@@ -30,6 +32,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onTabChange,
   botStatus,
   currentUser,
+  pendingAdminCount = 0,
   onToggleBot,
   onOpenHHLogin,
   onLogout,
@@ -38,11 +41,14 @@ export const Navbar: React.FC<NavbarProps> = ({
   const isHHConnected = currentUser?.hh_is_connected ?? false;
 
   const tabs = [
-    { id: "dashboard", label: "Дашборд", icon: Activity },
-    { id: "applications", label: "Отклики", icon: FileSpreadsheet },
-    { id: "settings", label: "Настройки", icon: SettingsIcon },
-    { id: "resume", label: "Резюме", icon: FileText },
-    { id: "logs", label: "Логи (Live)", icon: Terminal },
+    { id: "dashboard", label: "Дашборд", icon: Activity, badge: 0 },
+    { id: "applications", label: "Отклики", icon: FileSpreadsheet, badge: 0 },
+    { id: "settings", label: "Настройки", icon: SettingsIcon, badge: 0 },
+    { id: "resume", label: "Резюме", icon: FileText, badge: 0 },
+    { id: "logs", label: "Логи (Live)", icon: Terminal, badge: 0 },
+    ...(currentUser?.is_admin
+      ? [{ id: "admin", label: "Админка", icon: Shield, badge: pendingAdminCount }]
+      : []),
   ];
 
   return (
@@ -80,7 +86,12 @@ export const Navbar: React.FC<NavbarProps> = ({
                   }`}
                 >
                   <Icon className="w-4 h-4 mr-2" />
-                  {tab.label}
+                  <span>{tab.label}</span>
+                  {tab.badge > 0 && (
+                    <span className="ml-1.5 px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-amber-500 text-slate-950">
+                      {tab.badge}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -154,6 +165,33 @@ export const Navbar: React.FC<NavbarProps> = ({
             )}
           </div>
         </div>
+
+        {/* Mobile Navigation */}
+        <nav className="flex md:hidden items-center space-x-1 pb-2 overflow-x-auto">
+          {tabs.map((tab) => {
+            const Icon = tab.icon;
+            const active = currentTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => onTabChange(tab.id)}
+                className={`flex items-center px-2.5 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-colors ${
+                  active
+                    ? "bg-slate-800 text-blue-400 border border-slate-700"
+                    : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5 mr-1.5" />
+                <span>{tab.label}</span>
+                {tab.badge > 0 && (
+                  <span className="ml-1 px-1.5 py-0.2 text-[10px] font-bold rounded-full bg-amber-500 text-slate-950">
+                    {tab.badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
       </div>
     </header>
   );

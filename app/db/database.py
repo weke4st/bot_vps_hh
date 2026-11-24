@@ -97,6 +97,37 @@ async def init_db() -> None:
                 except Exception as exc:
                     logger.debug("Migration check on %s: %s", table, exc)
 
+            # Auto-migrate users table for approval workflow
+            try:
+                res = await conn.execute(text("PRAGMA table_info(users)"))
+                user_cols = [row[1] for row in res.fetchall()]
+                if user_cols:
+                    if "approval_status" not in user_cols:
+                        logger.info("Migrating table users: adding approval_status column")
+                        await conn.execute(
+                            text("ALTER TABLE users ADD COLUMN approval_status VARCHAR(32) NOT NULL DEFAULT 'approved'")
+                        )
+                    if "registration_note" not in user_cols:
+                        logger.info("Migrating table users: adding registration_note column")
+                        await conn.execute(text("ALTER TABLE users ADD COLUMN registration_note TEXT"))
+                    if "approved_at" not in user_cols:
+                        logger.info("Migrating table users: adding approved_at column")
+                        await conn.execute(text("ALTER TABLE users ADD COLUMN approved_at DATETIME"))
+
+                # Ensure earliest existing active user is admin if database has users but no admins yet
+                total_res = await conn.execute(text("SELECT COUNT(*) FROM users"))
+                total_users = total_res.scalar() or 0
+                if total_users > 0:
+                    adm_res = await conn.execute(text("SELECT COUNT(*) FROM users WHERE is_admin = 1"))
+                    admin_count = adm_res.scalar() or 0
+                    if admin_count == 0:
+                        logger.info("Promoting earliest existing user to administrator")
+                        await conn.execute(
+                            text("UPDATE users SET is_admin = 1, is_active = 1, approval_status = 'approved' WHERE id = (SELECT MIN(id) FROM users)")
+                        )
+            except Exception as exc:
+                logger.debug("Migration check on users: %s", exc)
+
     # Log current journal mode for SQLite
     settings = get_settings()
     if settings.database_url.startswith("sqlite"):

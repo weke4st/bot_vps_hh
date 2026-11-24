@@ -1,9 +1,13 @@
 import {
+  AdminUserItem,
+  AdminUsersListResponse,
   ApplicationDetail,
   ApplicationPagination,
   BotStatus,
   LogEntry,
   Period,
+  RegisterResult,
+  RegistrationMode,
   SettingsData,
   StatsSummary,
 } from "./types";
@@ -25,6 +29,12 @@ function getHeaders(): HeadersInit {
 // SaaS Authentication & User Profile
 // ═══════════════════════════════════════════════════════════════════════════
 
+export async function fetchAuthConfig(): Promise<{ registration_mode: RegistrationMode }> {
+  const res = await fetch(`${API_BASE}/auth/config`);
+  if (!res.ok) return { registration_mode: "request" };
+  return res.json();
+}
+
 export async function loginUser(email: string, password: string): Promise<{ access_token: string; user: any }> {
   const res = await fetch(`${API_BASE}/auth/login`, {
     method: "POST",
@@ -40,18 +50,25 @@ export async function loginUser(email: string, password: string): Promise<{ acce
   return data;
 }
 
-export async function registerUser(email: string, password: string, full_name = ""): Promise<{ access_token: string; user: any }> {
+export async function registerUser(
+  email: string,
+  password: string,
+  full_name = "",
+  note = ""
+): Promise<RegisterResult> {
   const res = await fetch(`${API_BASE}/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password, full_name }),
+    body: JSON.stringify({ email, password, full_name, note }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Ошибка регистрации");
   }
-  const data = await res.json();
-  localStorage.setItem("hh_bot_token", data.access_token);
+  const data: RegisterResult = await res.json();
+  if (data.access_token) {
+    localStorage.setItem("hh_bot_token", data.access_token);
+  }
   return data;
 }
 
@@ -250,4 +267,67 @@ export async function fetchLogs(limit = 100): Promise<{ logs: LogEntry[]; total:
   });
   if (!res.ok) throw new Error("Failed to fetch logs");
   return res.json();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Admin Panel API
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function adminRequest<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers: getHeaders(),
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Ошибка административного запроса");
+  }
+  return res.json();
+}
+
+export async function fetchAdminUsers(): Promise<AdminUsersListResponse> {
+  return adminRequest<AdminUsersListResponse>("/admin/users");
+}
+
+export async function adminCreateUser(payload: {
+  email: string;
+  password: string;
+  full_name: string;
+  is_admin: boolean;
+}): Promise<AdminUserItem> {
+  return adminRequest<AdminUserItem>("/admin/users", "POST", payload);
+}
+
+export async function adminApproveUser(userId: number): Promise<{ success: boolean; message: string }> {
+  return adminRequest(`/admin/users/${userId}/approve`, "POST");
+}
+
+export async function adminRejectUser(userId: number): Promise<{ success: boolean; message: string }> {
+  return adminRequest(`/admin/users/${userId}/reject`, "POST");
+}
+
+export async function adminToggleUserActive(userId: number): Promise<{ success: boolean; message: string }> {
+  return adminRequest(`/admin/users/${userId}/toggle-active`, "POST");
+}
+
+export async function adminStopUserBot(userId: number): Promise<{ success: boolean; message: string }> {
+  return adminRequest(`/admin/users/${userId}/stop-bot`, "POST");
+}
+
+export async function adminResetUserPassword(
+  userId: number,
+  password: string
+): Promise<{ success: boolean; message: string }> {
+  return adminRequest(`/admin/users/${userId}/reset-password`, "POST", { password });
+}
+
+export async function adminDeleteUser(userId: number): Promise<{ success: boolean; message: string }> {
+  return adminRequest(`/admin/users/${userId}`, "DELETE");
+}
+
+export async function adminUpdateSettings(
+  allow_registration_requests: boolean
+): Promise<{ success: boolean; message: string }> {
+  return adminRequest("/admin/settings", "PUT", { allow_registration_requests });
 }

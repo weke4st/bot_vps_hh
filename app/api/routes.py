@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
+import shutil
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal
 
@@ -22,17 +25,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.auth.security import (
+    authenticate_ws_user,
     create_access_token,
     decode_access_token,
+    get_current_admin,
     get_current_user,
     get_optional_user,
     hash_password,
     verify_password,
 )
 from app.api.schemas import (
+    AdminCreateUserRequest,
+    AdminOverviewSummary,
+    AdminResetPasswordRequest,
+    AdminSettingsUpdateRequest,
+    AdminUserItem,
+    AdminUsersListResponse,
     ApplicationDetail,
     ApplicationListItem,
     ApplicationPagination,
+    AuthConfigResponse,
     AuthTokenResponse,
     BotStatusResponse,
     CaptchaAttemptItem,
@@ -43,6 +55,7 @@ from app.api.schemas import (
     HHLoginVerifyRequest,
     LLMCallItem,
     LogsResponse,
+    RegisterResponse,
     ResumeResponse,
     ResumeUpdateRequest,
     SettingsResponse,
@@ -56,7 +69,7 @@ from app.api.schemas import (
     VacancySummary,
 )
 from app.api.state import bot_state, ws_manager
-from app.config import get_settings
+from app.config import USERS_DIR, get_settings
 from app.db.database import get_session, get_session_dep
 from app.db.models import Application, ApplicationStatus, DailyStats, User, Vacancy, VacancyStatus
 from app.db.repositories import (
@@ -69,6 +82,7 @@ from app.db.repositories import (
     get_total_stats,
     get_user_by_email,
     get_user_by_id,
+    list_all_users_with_stats,
     list_applications,
     list_vacancies,
     reset_application_for_retry,
@@ -83,6 +97,8 @@ from app.scheduler.service import scheduler_service
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["api"])
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _mask_secret(val: str | None, show_chars: int = 4) -> str:
@@ -100,6 +116,9 @@ def _user_to_response(user: User) -> UserResponse:
         id=user.id,
         email=user.email,
         full_name=user.full_name,
+        is_active=user.is_active,
+        is_admin=user.is_admin,
+        approval_status=getattr(user, "approval_status", "approved"),
         hh_phone=user.hh_phone,
         hh_is_connected=user.hh_is_connected,
         selected_resume_id=user.selected_resume_id,
@@ -117,58 +136,171 @@ def _user_to_response(user: User) -> UserResponse:
     )
 
 
+def _admin_user_to_item(user: User, applications_count: int = 0) -> AdminUserItem:
+    """Convert ORM User and app count into AdminUserItem."""
+    return AdminUserItem(
+        id=user.id,
+        email=user.email,
+        full_name=user.full_name,
+        is_active=user.is_active,
+        is_admin=user.is_admin,
+        approval_status=getattr(user, "approval_status", "approved"),
+        registration_note=getattr(user, "registration_note", None),
+        hh_phone=user.hh_phone,
+        hh_is_connected=user.hh_is_connected,
+        bot_enabled=user.bot_enabled,
+        bot_status=user.bot_status,
+        current_action=user.current_action,
+        search_query=user.search_query,
+        has_gigachat_key=bool(user.gigachat_auth_key and user.gigachat_auth_key.strip()),
+        has_proxy=bool(user.proxy_url and user.proxy_url.strip()),
+        applications_count=applications_count,
+        last_run_at=user.last_run_at,
+        created_at=user.created_at,
+        approved_at=getattr(user, "approved_at", None),
+    )
+
+
+async def _are_registration_requests_allowed(session: AsyncSession) -> bool:
+    """Return True if public registration access requests are enabled by admin."""
+    val = await get_setting(session, "allow_registration_requests", default="true")
+    return str(val).lower() != "false"
+
+
+async def _get_target_user_or_404(session: AsyncSession, user_id: int) -> User:
+    """Fetch user by ID or raise 404."""
+    target = await get_user_by_id(session, user_id)
+    if target is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Пользователь #{user_id} не найден",
+        )
+    return target
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 1. SaaS Authentication (Register / Login / Me)
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+@router.get(
+    "/auth/config",
+    response_model=AuthConfigResponse,
+    summary="Get public registration mode",
+)
+async def get_auth_config(
+    session: AsyncSession = Depends(get_session_dep),
+) -> AuthConfigResponse:
+    """Return whether public registration creates the first admin, submits a pending request, or is closed."""
+    user_count = (await session.execute(select(func.count(User.id)))).scalar_one() or 0
+    if user_count == 0:
+        return AuthConfigResponse(registration_mode="first_admin")
+    allowed = await _are_registration_requests_allowed(session)
+    return AuthConfigResponse(registration_mode="request" if allowed else "closed")
+
+
 @router.post(
     "/auth/register",
-    response_model=AuthTokenResponse,
-    summary="Register a new user on the SaaS platform",
+    response_model=RegisterResponse,
+    summary="Submit registration request (or bootstrap first admin)",
 )
 async def register(
     payload: UserRegisterRequest,
     response: Response,
     session: AsyncSession = Depends(get_session_dep),
-) -> AuthTokenResponse:
-    """Register a new user, return JWT and set auth cookie."""
-    existing = await get_user_by_email(session, payload.email)
+) -> RegisterResponse:
+    """Create initial admin if DB is empty, or queue a pending registration request for admin review."""
+    clean_email = payload.email.strip().lower()
+    if not _EMAIL_RE.match(clean_email):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Укажите корректный email адрес",
+        )
+
+    user_count = (await session.execute(select(func.count(User.id)))).scalar_one() or 0
+    is_first_user = user_count == 0
+
+    if not is_first_user:
+        allowed = await _are_registration_requests_allowed(session)
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Регистрация закрыта. Создать аккаунт может только администратор.",
+            )
+
+        pending_count = (
+            await session.execute(
+                select(func.count(User.id)).where(User.approval_status == "pending")
+            )
+        ).scalar_one() or 0
+        if pending_count >= 50:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Слишком много нерассмотренных заявок. Попробуйте позже.",
+            )
+
+    existing = await get_user_by_email(session, clean_email)
     if existing:
+        if getattr(existing, "approval_status", "approved") == "pending":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Заявка с этим email уже отправлена и ожидает одобрения администратора",
+            )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Пользователь с таким email уже зарегистрирован",
         )
 
-    # First user is admin automatically
-    count_stmt = select(func.count(User.id))
-    user_count = (await session.execute(count_stmt)).scalar_one() or 0
-    is_admin = user_count == 0
-
     hashed_pw = hash_password(payload.password)
+    now = datetime.now(timezone.utc)
+
+    if is_first_user:
+        user = await create_user(
+            session,
+            email=clean_email,
+            hashed_password=hashed_pw,
+            full_name=payload.full_name,
+            is_admin=True,
+            is_active=True,
+            approval_status="approved",
+            approved_at=now,
+        )
+        await session.commit()
+        await session.refresh(user)
+
+        token = create_access_token({"sub": str(user.id), "email": user.email})
+        response.set_cookie(
+            key="access_token",
+            value=token,
+            httponly=True,
+            max_age=30 * 24 * 3600,
+            samesite="lax",
+        )
+        logger.info("First admin user registered: #%d (%s)", user.id, user.email)
+        return RegisterResponse(
+            status="approved",
+            message="Аккаунт администратора создан",
+            access_token=token,
+            user=_user_to_response(user),
+        )
+
     user = await create_user(
         session,
-        email=payload.email,
+        email=clean_email,
         hashed_password=hashed_pw,
         full_name=payload.full_name,
-        is_admin=is_admin,
+        is_admin=False,
+        is_active=False,
+        approval_status="pending",
+        registration_note=payload.note,
     )
     await session.commit()
-    await session.refresh(user)
-
-    token = create_access_token({"sub": str(user.id), "email": user.email})
-    response.set_cookie(
-        key="access_token",
-        value=token,
-        httponly=True,
-        max_age=30 * 24 * 3600,
-        samesite="lax",
-    )
-
-    logger.info("New user registered: #%d (%s)", user.id, user.email)
-    return AuthTokenResponse(
-        access_token=token,
-        user=_user_to_response(user),
+    logger.info("New registration request queued: #%d (%s)", user.id, user.email)
+    return RegisterResponse(
+        status="pending",
+        message="Заявка отправлена администратору! Доступ откроется после одобрения.",
+        access_token=None,
+        user=None,
     )
 
 
@@ -190,10 +322,21 @@ async def login(
             detail="Неверный email или пароль",
         )
 
+    approval = getattr(user, "approval_status", "approved")
+    if approval == "pending":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Ваша заявка ещё находится на рассмотрении у администратора",
+        )
+    if approval == "rejected":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Ваша заявка на регистрацию была отклонена администратором",
+        )
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Аккаунт заблокирован",
+            detail="Аккаунт заблокирован администратором",
         )
 
     token = create_access_token({"sub": str(user.id), "email": user.email})
@@ -683,10 +826,10 @@ async def get_resume(
 ) -> ResumeResponse:
     """Retrieve candidate resume stored in database settings for current user."""
     text = await get_setting(session, user.id, "resume_text")
-    if not text:
+    if not text and user.is_admin:
         text = await get_setting(session, "resume_text") or ""
     updated = await get_setting(session, user.id, "resume_updated_at")
-    return ResumeResponse(text=text, updated_at=updated)
+    return ResumeResponse(text=text or "", updated_at=updated)
 
 
 @router.put("/resume", response_model=StandardResponse, summary="Update candidate resume text")
@@ -706,7 +849,268 @@ async def update_resume(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 5. Backward Compatibility & System Endpoints
+# 5. Admin Panel — User Management & Approval Queue
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.get(
+    "/admin/users",
+    response_model=AdminUsersListResponse,
+    summary="List all platform users, pending requests, and overview stats (Admin only)",
+)
+async def admin_list_users(
+    admin: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_session_dep),
+) -> AdminUsersListResponse:
+    """Return all user accounts with stats and registration mode flag."""
+    rows = await list_all_users_with_stats(session)
+    items = [_admin_user_to_item(u, cnt) for u, cnt in rows]
+
+    summary = AdminOverviewSummary(
+        total_users=len(items),
+        pending_count=sum(1 for u in items if u.approval_status == "pending"),
+        active_bots_count=sum(1 for u in items if u.bot_enabled and u.is_active),
+        total_applications=sum(u.applications_count for u in items),
+    )
+    allow_requests = await _are_registration_requests_allowed(session)
+    return AdminUsersListResponse(
+        users=items,
+        summary=summary,
+        allow_registration_requests=allow_requests,
+    )
+
+
+@router.post(
+    "/admin/users",
+    response_model=AdminUserItem,
+    summary="Manually create an already approved user (Admin only)",
+)
+async def admin_create_user(
+    payload: AdminCreateUserRequest,
+    admin: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_session_dep),
+) -> AdminUserItem:
+    """Create a user directly with approved status."""
+    clean_email = payload.email.strip().lower()
+    if not _EMAIL_RE.match(clean_email):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Укажите корректный email адрес",
+        )
+
+    existing = await get_user_by_email(session, clean_email)
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Пользователь с таким email уже существует",
+        )
+
+    now = datetime.now(timezone.utc)
+    user = await create_user(
+        session,
+        email=clean_email,
+        hashed_password=hash_password(payload.password),
+        full_name=payload.full_name,
+        is_admin=payload.is_admin,
+        is_active=True,
+        approval_status="approved",
+        approved_at=now,
+    )
+    await session.commit()
+    await session.refresh(user)
+    logger.info("Admin #%d manually created user #%d (%s)", admin.id, user.id, user.email)
+    return _admin_user_to_item(user, 0)
+
+
+@router.post(
+    "/admin/users/{user_id}/approve",
+    response_model=StandardResponse,
+    summary="Approve pending user registration request (Admin only)",
+)
+async def admin_approve_user(
+    user_id: int,
+    admin: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_session_dep),
+) -> StandardResponse:
+    """Approve user registration and activate account."""
+    target = await _get_target_user_or_404(session, user_id)
+    target.is_active = True
+    target.approval_status = "approved"
+    target.approved_at = datetime.now(timezone.utc)
+    await session.commit()
+    logger.info("Admin #%d approved user #%d (%s)", admin.id, target.id, target.email)
+    return StandardResponse(message=f"Пользователь {target.email} одобрен и активирован")
+
+
+@router.post(
+    "/admin/users/{user_id}/reject",
+    response_model=StandardResponse,
+    summary="Reject pending user registration request (Admin only)",
+)
+async def admin_reject_user(
+    user_id: int,
+    admin: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_session_dep),
+) -> StandardResponse:
+    """Reject a user's registration request and keep account inactive."""
+    target = await _get_target_user_or_404(session, user_id)
+    if target.id == admin.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Нельзя отклонить самого себя",
+        )
+    target.is_active = False
+    target.approval_status = "rejected"
+    target.bot_enabled = False
+    target.bot_status = "stopped"
+    scheduler_service.stop_user(target.id)
+    await session.commit()
+    logger.info("Admin #%d rejected user #%d (%s)", admin.id, target.id, target.email)
+    return StandardResponse(message=f"Заявка {target.email} отклонена")
+
+
+@router.post(
+    "/admin/users/{user_id}/toggle-active",
+    response_model=StandardResponse,
+    summary="Block or unblock user access (Admin only)",
+)
+async def admin_toggle_user_active(
+    user_id: int,
+    admin: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_session_dep),
+) -> StandardResponse:
+    """Toggle user active status; immediately stops bot if blocked."""
+    target = await _get_target_user_or_404(session, user_id)
+    if target.id == admin.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Нельзя заблокировать самого себя",
+        )
+
+    new_active = not target.is_active
+    target.is_active = new_active
+    if new_active:
+        if getattr(target, "approval_status", "approved") != "approved":
+            target.approval_status = "approved"
+            target.approved_at = datetime.now(timezone.utc)
+    else:
+        target.bot_enabled = False
+        target.bot_status = "stopped"
+        target.current_action = "Заблокирован администратором"
+        scheduler_service.stop_user(target.id)
+
+    await session.commit()
+    logger.info("Admin #%d toggled active=%s for user #%d", admin.id, new_active, target.id)
+    return StandardResponse(
+        message=f"Пользователь {target.email} {'разблокирован' if new_active else 'заблокирован'}"
+    )
+
+
+@router.post(
+    "/admin/users/{user_id}/stop-bot",
+    response_model=StandardResponse,
+    summary="Force stop a user's bot (Admin only)",
+)
+async def admin_stop_user_bot(
+    user_id: int,
+    admin: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_session_dep),
+) -> StandardResponse:
+    """Stop bot execution for the target user."""
+    target = await _get_target_user_or_404(session, user_id)
+    target.bot_enabled = False
+    target.bot_status = "stopped"
+    target.current_action = "Остановлен администратором"
+    scheduler_service.stop_user(target.id)
+    await session.commit()
+    logger.info("Admin #%d stopped bot for user #%d", admin.id, target.id)
+    return StandardResponse(message=f"Бот пользователя {target.email} остановлен")
+
+
+@router.post(
+    "/admin/users/{user_id}/reset-password",
+    response_model=StandardResponse,
+    summary="Reset password for a user (Admin only)",
+)
+async def admin_reset_user_password(
+    user_id: int,
+    payload: AdminResetPasswordRequest,
+    admin: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_session_dep),
+) -> StandardResponse:
+    """Set a new password for the target user."""
+    target = await _get_target_user_or_404(session, user_id)
+    target.hashed_password = hash_password(payload.password)
+    await session.commit()
+    logger.info("Admin #%d reset password for user #%d (%s)", admin.id, target.id, target.email)
+    return StandardResponse(message=f"Пароль для {target.email} обновлён")
+
+
+@router.delete(
+    "/admin/users/{user_id}",
+    response_model=StandardResponse,
+    summary="Delete a user account and all its data (Admin only)",
+)
+async def admin_delete_user(
+    user_id: int,
+    admin: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_session_dep),
+) -> StandardResponse:
+    """Delete user record, stop bot, and clean up browser session directory."""
+    target = await _get_target_user_or_404(session, user_id)
+    if target.id == admin.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Нельзя удалить собственный аккаунт администратора",
+        )
+
+    scheduler_service.stop_user(target.id)
+    await cancel_hh_login(target.id)
+    target_email = target.email
+    await session.delete(target)
+    await session.commit()
+
+    user_dir = USERS_DIR / str(user_id)
+    if user_dir.exists():
+        shutil.rmtree(user_dir, ignore_errors=True)
+
+    logger.info("Admin #%d deleted user #%d (%s)", admin.id, user_id, target_email)
+    return StandardResponse(message=f"Пользователь {target_email} удалён")
+
+
+@router.put(
+    "/admin/settings",
+    response_model=StandardResponse,
+    summary="Update platform access policy (Admin only)",
+)
+async def admin_update_settings(
+    payload: AdminSettingsUpdateRequest,
+    admin: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_session_dep),
+) -> StandardResponse:
+    """Toggle whether public registration requests are accepted."""
+    await set_setting(
+        session,
+        "allow_registration_requests",
+        "true" if payload.allow_registration_requests else "false",
+    )
+    await session.commit()
+    logger.info(
+        "Admin #%d set allow_registration_requests=%s",
+        admin.id,
+        payload.allow_registration_requests,
+    )
+    return StandardResponse(
+        message=(
+            "Приём заявок на регистрацию включён"
+            if payload.allow_registration_requests
+            else "Регистрация закрыта: создавать аккаунты может только администратор"
+        )
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6. Backward Compatibility & System Endpoints
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -715,7 +1119,7 @@ async def get_bot_status(
     user: User | None = Depends(get_optional_user),
     session: AsyncSession = Depends(get_session_dep),
 ) -> BotStatusResponse:
-    """Return bot status for current user (or global status)."""
+    """Return bot status for authenticated user (sanitized status if unauthenticated)."""
     if user:
         return BotStatusResponse(
             status=user.bot_status if user.bot_enabled else "stopped",
@@ -731,26 +1135,27 @@ async def get_bot_status(
             error_message=user.last_error,
         )
 
-    # Fallback to system state
-    s = bot_state.snapshot()
     return BotStatusResponse(
-        status=s.status,
-        is_running=s.is_running,
-        current_action=s.current_action,
-        current_vacancy=s.current_vacancy,
-        uptime_seconds=s.uptime_seconds,
-        last_run=s.last_run,
-        next_run=s.next_run,
-        applications_today=s.applications_today,
-        applications_this_hour=s.applications_this_hour,
-        limits=s.limits,
-        error_message=s.error_message,
+        status="stopped",
+        is_running=False,
+        current_action="Требуется авторизация",
+        current_vacancy=None,
+        uptime_seconds=0,
+        last_run=None,
+        next_run=None,
+        applications_today=0,
+        applications_this_hour=0,
+        limits={},
+        error_message=None,
     )
 
 
 @router.get("/logs", response_model=LogsResponse)
-async def get_logs(limit: int = 100) -> LogsResponse:
-    """Fetch recent system logs."""
+async def get_logs(
+    limit: int = 100,
+    user: User = Depends(get_current_user),
+) -> LogsResponse:
+    """Fetch recent system logs (authenticated users only)."""
     all_logs = bot_state.get_logs(limit)
     return LogsResponse(logs=all_logs, total=len(all_logs))
 
@@ -760,10 +1165,18 @@ async def websocket_endpoint(
     websocket: WebSocket,
     token: str | None = Query(default=None),
 ) -> None:
-    """Real-time updates WebSocket endpoint."""
+    """Real-time updates WebSocket endpoint (authenticated users only)."""
+    ws_token = token or websocket.cookies.get("access_token")
+    async with get_session() as session:
+        ws_user = await authenticate_ws_user(ws_token, session)
+
+    if ws_user is None:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await ws_manager.connect(websocket)
     try:
-        # Send initial bot status snapshot
+        # Send initial user-safe bot status snapshot
         await websocket.send_json(
             {"type": "bot_status", "data": bot_state.snapshot().model_dump(mode="json")}
         )
@@ -775,7 +1188,9 @@ async def websocket_endpoint(
         while True:
             try:
                 # 20-second keepalive to prevent idle disconnects across firewalls / browsers
-                await asyncio.wait_for(websocket.receive_text(), timeout=20.0)
+                msg = await asyncio.wait_for(websocket.receive_text(), timeout=20.0)
+                if msg == "ping":
+                    await websocket.send_text("pong")
             except asyncio.TimeoutError:
                 await websocket.send_json({"type": "ping"})
     except (WebSocketDisconnect, Exception) as exc:

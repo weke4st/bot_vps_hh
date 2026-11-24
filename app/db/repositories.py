@@ -38,6 +38,10 @@ async def create_user(
     hashed_password: str,
     full_name: str = "",
     is_admin: bool = False,
+    is_active: bool = True,
+    approval_status: str = "approved",
+    registration_note: str | None = None,
+    approved_at: datetime | None = None,
 ) -> User:
     """Create a new SaaS user."""
     user = User(
@@ -45,6 +49,10 @@ async def create_user(
         hashed_password=hashed_password,
         full_name=full_name.strip(),
         is_admin=is_admin,
+        is_active=is_active,
+        approval_status=approval_status,
+        registration_note=registration_note.strip() if registration_note else None,
+        approved_at=approved_at,
     )
     session.add(user)
     await session.flush()
@@ -66,14 +74,37 @@ async def get_user_by_id(session: AsyncSession, user_id: int) -> User | None:
 
 
 async def list_active_bot_users(session: AsyncSession) -> Sequence[User]:
-    """Fetch all users who have enabled the bot and connected hh.ru."""
+    """Fetch all approved, active users who have enabled the bot and connected hh.ru."""
     stmt = select(User).where(
         User.bot_enabled.is_(True),
         User.is_active.is_(True),
         User.hh_is_connected.is_(True),
+        User.approval_status == "approved",
     )
     result = await session.execute(stmt)
     return result.scalars().all()
+
+
+async def list_all_users_with_stats(session: AsyncSession) -> list[tuple[User, int]]:
+    """Fetch all users (pending requests first) with application counts."""
+    counts_subq = (
+        select(
+            Application.user_id,
+            func.count(Application.id).label("app_count"),
+        )
+        .group_by(Application.user_id)
+        .subquery()
+    )
+    stmt = (
+        select(User, func.coalesce(counts_subq.c.app_count, 0))
+        .outerjoin(counts_subq, User.id == counts_subq.c.user_id)
+        .order_by(
+            (User.approval_status == "pending").desc(),
+            User.created_at.desc(),
+        )
+    )
+    result = await session.execute(stmt)
+    return [(row[0], int(row[1] or 0)) for row in result.all()]
 
 
 async def update_user_bot_state(

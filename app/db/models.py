@@ -89,6 +89,11 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     is_admin: Mapped[bool] = mapped_column(default=False, nullable=False)
+    approval_status: Mapped[str] = mapped_column(
+        String(32), default="approved", nullable=False, index=True
+    )
+    registration_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # HH.ru Account Details
     hh_phone: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
