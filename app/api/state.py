@@ -41,9 +41,13 @@ class LogBufferHandler(logging.Handler):
 
             # Fire-and-forget broadcast to WebSockets
             if ws_manager.active_connections:
-                asyncio.create_task(
-                    ws_manager.broadcast_json({"type": "log", "data": entry.model_dump()})
-                )
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(
+                        ws_manager.broadcast_json({"type": "log", "data": entry.model_dump(mode="json")})
+                    )
+                except RuntimeError:
+                    pass
         except Exception:
             self.handleError(record)
 
@@ -191,6 +195,19 @@ class BotStateManager:
             },
             error_message=self.error_message,
         )
+
+    def snapshot(self) -> BotStatusResponse:
+        """Alias for to_status_response for backward compatibility."""
+        return self.to_status_response()
+
+    @property
+    def logs(self) -> list[LogEntry]:
+        """Return all log entries currently in memory."""
+        return list(self.log_buffer)
+
+    def get_logs(self, limit: int = 100) -> list[LogEntry]:
+        """Return the most recent log entries up to limit."""
+        return list(self.log_buffer)[-limit:]
 
     def _notify_state_change(self) -> None:
         """Broadcast state update to all WebSocket listeners."""

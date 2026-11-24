@@ -63,6 +63,7 @@ from app.db.repositories import (
     count_applications,
     create_user,
     get_all_settings,
+    get_application_detail,
     get_recent_daily_stats,
     get_setting,
     get_total_stats,
@@ -70,6 +71,7 @@ from app.db.repositories import (
     get_user_by_id,
     list_applications,
     list_vacancies,
+    reset_application_for_retry,
     set_setting,
     update_user_bot_state,
     update_user_hh_status,
@@ -531,10 +533,114 @@ async def get_user_applications(
     return ApplicationPagination(items=items, total=total, page=page, limit=limit, pages=pages)
 
 
+@router.get(
+    "/applications/{application_id}",
+    response_model=ApplicationDetail,
+    summary="Get full application details including cover letter and logs",
+)
+@router.get(
+    "/user/applications/{application_id}",
+    response_model=ApplicationDetail,
+    summary="Get full application details (alias)",
+)
+async def get_application(
+    application_id: int,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session_dep),
+) -> ApplicationDetail:
+    """Fetch details of a single application by ID."""
+    app = await get_application_detail(session, application_id, user_id=user.id)
+    if not app:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Application {application_id} not found",
+        )
+
+    vac_summary = VacancySummary(
+        id=app.vacancy.id,
+        hh_id=app.vacancy.hh_id,
+        title=app.vacancy.title,
+        company=app.vacancy.company,
+        salary=app.vacancy.salary,
+        url=app.vacancy.url,
+        status=app.vacancy.status.value,
+        description=app.vacancy.description,
+    )
+
+    captcha_items = [
+        CaptchaAttemptItem(
+            id=c.id,
+            image_path=c.image_path,
+            model_answer=c.model_answer,
+            correct=c.correct,
+            created_at=c.created_at,
+        )
+        for c in (app.captcha_attempts or [])
+    ]
+
+    llm_items = [
+        LLMCallItem(
+            id=l.id,
+            provider=l.provider,
+            model=l.model,
+            prompt_tokens=l.prompt_tokens,
+            completion_tokens=l.completion_tokens,
+            latency_ms=l.latency_ms,
+            created_at=l.created_at,
+        )
+        for l in (app.llm_calls or [])
+    ]
+
+    return ApplicationDetail(
+        id=app.id,
+        vacancy=vac_summary,
+        cover_letter=app.cover_letter,
+        status=app.status.value,
+        sent_at=app.sent_at,
+        response_at=app.response_at,
+        response_type=app.response_type,
+        created_at=app.created_at,
+        captcha_attempts=captcha_items,
+        llm_calls=llm_items,
+    )
+
+
+@router.post(
+    "/applications/{application_id}/retry",
+    response_model=StandardResponse,
+    summary="Retry a failed or manual application",
+)
+async def retry_application(
+    application_id: int,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session_dep),
+) -> StandardResponse:
+    """Reset application and its vacancy status back to pending/new."""
+    app = await reset_application_for_retry(session, application_id, user_id=user.id)
+    if not app:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Application {application_id} not found",
+        )
+    await session.commit()
+    logger.info("Application #%d reset for retry by user #%d", application_id, user.id)
+    return StandardResponse(message=f"Отклик #{application_id} сброшен для повторной отправки")
+
+
 @router.post(
     "/user/vacancies/reset",
     response_model=StandardResponse,
     summary="Reset manual vacancies back to 'new' for retry",
+)
+@router.post(
+    "/vacancies/reset",
+    response_model=StandardResponse,
+    summary="Reset manual vacancies (alias)",
+)
+@router.post(
+    "/vacancies/reset-manual",
+    response_model=StandardResponse,
+    summary="Reset manual vacancies (alias)",
 )
 async def reset_user_vacancies(
     user: User = Depends(get_current_user),
@@ -642,9 +748,8 @@ async def get_bot_status(
 @router.get("/logs", response_model=LogsResponse)
 async def get_logs(limit: int = 100) -> LogsResponse:
     """Fetch recent system logs."""
-    all_logs = bot_state.logs
-    slice_logs = all_logs[-limit:] if limit < len(all_logs) else all_logs
-    return LogsResponse(logs=slice_logs, total=len(all_logs))
+    all_logs = bot_state.get_logs(limit)
+    return LogsResponse(logs=all_logs, total=len(all_logs))
 
 
 @router.websocket("/ws")
@@ -659,11 +764,18 @@ async def websocket_endpoint(
         await websocket.send_json(
             {"type": "bot_status", "data": bot_state.snapshot().model_dump(mode="json")}
         )
+        # Send initial logs snapshot so Web UI terminal shows current logs
+        logs_list = [entry.model_dump(mode="json") for entry in bot_state.get_logs(200)]
+        await websocket.send_json(
+            {"type": "logs_snapshot", "data": logs_list}
+        )
         while True:
             try:
                 # 20-second keepalive to prevent idle disconnects across firewalls / browsers
                 await asyncio.wait_for(websocket.receive_text(), timeout=20.0)
             except asyncio.TimeoutError:
                 await websocket.send_json({"type": "ping"})
-    except (WebSocketDisconnect, Exception):
+    except (WebSocketDisconnect, Exception) as exc:
+        logger.debug("WebSocket client disconnected: %s", exc)
+    finally:
         ws_manager.disconnect(websocket)

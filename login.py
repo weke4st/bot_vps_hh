@@ -64,6 +64,7 @@ async def main() -> None:
             timezone_id="Europe/Moscow",
             args=[
                 "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
                 f"--user-agent={settings.user_agent}",
             ],
         )

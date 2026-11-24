@@ -90,6 +90,17 @@ class BotWorker:
         )
 
         try:
+            # 0. Check GigaChat API key
+            effective_key = user.gigachat_auth_key or self.settings.gigachat_auth_key.get_secret_value()
+            if not effective_key:
+                logger.warning("User #%d has no GigaChat API key configured", user.id)
+                async with get_session() as session:
+                    await update_user_bot_state(
+                        session, user.id, bot_status="idle", current_action="Ошибка: укажите личный GigaChat API ключ в Настройках"
+                    )
+                    await session.commit()
+                return
+
             # 1. Verify rate limits for this user
             async with get_session() as session:
                 allowed, reason = await self.rate_limiter.can_apply(session, user_id=user.id)
@@ -143,6 +154,7 @@ class BotWorker:
             # 4. Sequentially process and apply to vacancies
             applied_in_this_cycle = 0
 
+            consecutive_errors = 0
             for vacancy in pending_vacancies:
                 if self.stop_event.is_set():
                     break
@@ -159,6 +171,17 @@ class BotWorker:
 
                 if success:
                     applied_in_this_cycle += 1
+                    consecutive_errors = 0
+                else:
+                    consecutive_errors += 1
+                    # Protective cooldown to prevent rapid error cycling
+                    await asyncio.sleep(2.0)
+                    if consecutive_errors >= 5:
+                        logger.warning(
+                            "User #%d: 5 consecutive vacancy errors encountered. Pausing cycle to protect account and resources.",
+                            user.id,
+                        )
+                        break
 
             now = datetime.now(timezone.utc)
             async with get_session() as session:

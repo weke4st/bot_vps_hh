@@ -80,6 +80,10 @@ async def start_hh_login(user_id: int, phone: str, proxy_url: str | None = None)
         "--disable-blink-features=AutomationControlled",
         "--no-sandbox",
         "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+        "--no-zygote",
         "--disable-infobars",
         "--ignore-certificate-errors",
     ]

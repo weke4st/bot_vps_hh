@@ -86,7 +86,17 @@ class HHClient:
         logger.info("Opening search URL for user #%d: %s", self.user_id, url)
         bot_state.set_running(action=f"Поиск вакансий: {query} (стр. {page_num})")
 
-        await page.goto(url, wait_until="domcontentloaded")
+        try:
+            await page.goto(url, wait_until="domcontentloaded")
+        except Exception as nav_err:
+            err_str = str(nav_err).lower()
+            if "crash" in err_str or "target" in err_str or "closed" in err_str:
+                logger.warning("Browser crashed on search goto. Restarting browser and retrying once...")
+                page = await self.browser_manager.restart()
+                await page.goto(url, wait_until="domcontentloaded")
+            else:
+                raise nav_err
+
         await random_pause(min_s=2.0, max_s=4.0)
 
         raw_items = await self.parser.parse_search_page(page)
@@ -206,7 +216,20 @@ class HHClient:
             return False
 
         try:
-            await page.goto(vacancy.url, wait_until="domcontentloaded")
+            try:
+                await page.goto(vacancy.url, wait_until="domcontentloaded")
+            except Exception as nav_err:
+                err_str = str(nav_err).lower()
+                if "crash" in err_str or "target" in err_str or "closed" in err_str:
+                    logger.warning(
+                        "Browser crashed on navigation to #%s. Restarting browser and retrying once...",
+                        vacancy.hh_id,
+                    )
+                    page = await self.browser_manager.restart()
+                    await page.goto(vacancy.url, wait_until="domcontentloaded")
+                else:
+                    raise nav_err
+
             await random_pause(min_s=2.0, max_s=4.0)
 
             # 1. Update company and description details from full page if missing
@@ -307,18 +330,26 @@ class HHClient:
             await random_pause(min_s=1.5, max_s=2.5)
 
             # Ensure apply click triggered on mobile view (if button still visible and no popup/redirect, retry with force)
-            still_apply = await page.query_selector(apply_btn_sel)
-            if still_apply and await still_apply.is_visible():
-                modal = await page.query_selector(
-                    "[class*='bottom-sheet'], [class*='modal'], [data-qa*='popup'], [data-qa*='responded']"
-                )
-                if not modal and "vacancy_response" not in page.url:
-                    logger.info("Retrying click on Apply button directly...")
-                    try:
-                        await still_apply.click(force=True)
-                        await random_pause(min_s=1.5, max_s=2.5)
-                    except Exception:
-                        pass
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=2000)
+            except Exception:
+                pass
+
+            try:
+                still_apply = await page.query_selector(apply_btn_sel)
+                if still_apply and await still_apply.is_visible():
+                    modal = await page.query_selector(
+                        "[class*='bottom-sheet'], [class*='modal'], [data-qa*='popup'], [data-qa*='responded']"
+                    )
+                    if not modal and "vacancy_response" not in page.url:
+                        logger.info("Retrying click on Apply button directly...")
+                        try:
+                            await still_apply.click(force=True)
+                            await random_pause(min_s=1.5, max_s=2.5)
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.debug("Page navigated or execution context reset after apply click: %s", e)
 
             # Close minor nuisance surveys / post-apply survey sheets if present
             for survey_btn_sel in [
@@ -392,11 +423,11 @@ class HHClient:
             form_cfg = self.selectors.get("apply_form", {})
             toggle_sel = form_cfg.get(
                 "cover_letter_toggle",
-                "[data-qa='responded-success-attach-cover-letter'], [data-qa='vacancy-response-letter-toggle'], [data-qa='vacancy-response-popup-letter'], button:has-text('сопроводительное'), a:has-text('сопроводительное')",
+                "[data-qa='responded-success-attach-cover-letter'], [data-qa='vacancy-response-letter-toggle'], [data-qa='vacancy-response-popup-letter'], [data-qa*='cover-letter'], [data-qa*='letter-toggle'], [data-qa*='add-letter'], button:has-text('сопроводительное'), a:has-text('сопроводительное'), button:has-text('письмо'), a:has-text('письмо')",
             )
             textarea_sel = form_cfg.get(
                 "cover_letter_textarea",
-                "textarea[data-qa='vacancy-response-popup-form-letter-input'], [data-qa='vacancy-response-letter-text'], textarea[name='letter'], textarea[placeholder*='сопроводит'], [data-qa*='letter'] textarea",
+                "textarea[data-qa='vacancy-response-popup-form-letter-input'], [data-qa='vacancy-response-letter-text'], [data-qa*='magritte-textarea'], textarea[name='letter'], textarea[placeholder*='сопроводит'], [data-qa*='letter'] textarea, textarea",
             )
             submit_sel = form_cfg.get(
                 "submit_button",
@@ -604,9 +635,22 @@ class HHClient:
 
         except Exception as exc:
             logger.error("Error while processing vacancy #%s: %s", vacancy.hh_id, exc, exc_info=True)
-            await self.browser_manager.capture_screenshot(
-                name_prefix=f"error_{vacancy.hh_id}"
-            )
+            err_str = str(exc).lower()
+            if "crash" in err_str or "target" in err_str or "closed" in err_str:
+                logger.warning("Browser target crash/close detected. Resetting browser context...")
+                try:
+                    await self.browser_manager.restart()
+                except Exception as r_err:
+                    logger.error("Failed to restart browser manager after crash: %s", r_err)
+            else:
+                try:
+                    await self.browser_manager.capture_screenshot(
+                        name_prefix=f"error_{vacancy.hh_id}"
+                    )
+                except Exception:
+                    pass
             await update_vacancy_status(session, vacancy.id, VacancyStatus.manual)
             await session.commit()
             return False
+        finally:
+            await self.browser_manager.cleanup_extra_tabs()

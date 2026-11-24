@@ -9,7 +9,7 @@
 #   http://YOUR_SERVER_IP:8000 (or http://YOUR_SERVER_IP)
 # ═══════════════════════════════════════════════════════════════════════════
 
-version: "3.9"
+version: "3.7"
 
 services:
   # ── Unified SaaS Web & Bot Service ──────────────────────────────────────

@@ -63,10 +63,19 @@ class BrowserManager:
             "--disable-blink-features=AutomationControlled",
             "--no-sandbox",
             "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-software-rasterizer",
+            "--no-zygote",
             "--disable-infobars",
             "--window-position=0,0",
             "--ignore-certificate-errors",
             "--ignore-certificate-errors-spki-list",
+            "--disable-background-networking",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--mute-audio",
             f"--user-agent={self.settings.user_agent}",
         ]
 
@@ -138,10 +147,42 @@ class BrowserManager:
             except Exception as e:
                 logger.warning("Failed to save cookies: %s", e)
 
+    async def restart(self) -> Page:
+        """Gracefully close existing context and start a fresh browser context."""
+        logger.warning("Restarting browser context...")
+        await self.close()
+        return await self.start()
+
+    async def cleanup_extra_tabs(self) -> None:
+        """Close extra tabs/popups leaving only the primary page to prevent memory leaks."""
+        if not self._context:
+            return
+        try:
+            pages = self._context.pages
+            if len(pages) > 1:
+                for p in pages[1:]:
+                    if not p.is_closed():
+                        try:
+                            await p.close()
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
     async def get_page(self) -> Page:
-        """Get or lazily start active browser page."""
-        if self._page is None or self._page.is_closed():
+        """Get or lazily start active browser page, restarting if crashed or dead."""
+        if self._page is None or self._context is None:
             return await self.start()
+
+        try:
+            if self._page.is_closed() or self._context.is_closed():
+                return await self.restart()
+            # Fast ping to ensure renderer process is still alive and responsive
+            await self._page.evaluate("() => true")
+        except Exception as e:
+            logger.warning("Browser page/context is dead or crashed (%s). Restarting...", e)
+            return await self.restart()
+
         return self._page
 
     async def is_authenticated(self) -> bool:
@@ -184,7 +225,10 @@ class BrowserManager:
 
     async def close(self) -> None:
         """Save cookies and gracefully close browser context."""
-        await self.save_cookies()
+        try:
+            await self.save_cookies()
+        except Exception:
+            pass
         if self._context:
             try:
                 await self._context.close()

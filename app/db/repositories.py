@@ -274,6 +274,56 @@ async def count_applications(
     return result.scalar_one() or 0
 
 
+async def get_application_detail(
+    session: AsyncSession, application_id: int, user_id: int | None = None
+) -> Application | None:
+    """Fetch a single application by ID with related objects loaded."""
+    stmt = (
+        select(Application)
+        .options(
+            selectinload(Application.vacancy),
+            selectinload(Application.captcha_attempts),
+            selectinload(Application.llm_calls),
+        )
+        .where(Application.id == application_id)
+    )
+    if user_id is not None:
+        stmt = stmt.where(Application.user_id == user_id)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def reset_application_for_retry(
+    session: AsyncSession, application_id: int, user_id: int | None = None
+) -> Application | None:
+    """Reset an application back to pending status for retry."""
+    app = await get_application_detail(session, application_id, user_id)
+    if app is None:
+        return None
+    app.status = ApplicationStatus.pending
+    app.sent_at = None
+    app.vacancy.status = VacancyStatus.new
+    return app
+
+
+async def reset_user_manual_vacancies(
+    session: AsyncSession, user_id: int
+) -> int:
+    """Reset all vacancies with status 'manual' back to 'new' for this user."""
+    stmt = (
+        update(Vacancy)
+        .where(Vacancy.user_id == user_id, Vacancy.status == VacancyStatus.manual)
+        .values(status=VacancyStatus.new)
+    )
+    result = await session.execute(stmt)
+    stmt_app = (
+        delete(Application)
+        .where(Application.user_id == user_id, Application.status == ApplicationStatus.manual)
+    )
+    await session.execute(stmt_app)
+    return result.rowcount or 0
+
+
 async def count_applications_since(
     session: AsyncSession, user_id: int, since: datetime
 ) -> int:
