@@ -40,7 +40,9 @@ DEFAULT_STOP_WORDS = [
     "курьер",
     "оператор колл",
     "call-центр",
-    # Non-IT engineering / plumbing / HVAC / industrial automation / construction
+]
+
+NON_IT_TITLE_STOP_WORDS = [
     "сантехник",
     "водопровод",
     "канализац",
@@ -199,11 +201,17 @@ def is_vacancy_relevant(
     """Verify that vacancy title is relevant to search query, role synonyms, and does not hit stop words."""
     title_lower = title.lower()
 
-    # 1. Stop words check
-    active_stops = stop_words if stop_words is not None else DEFAULT_STOP_WORDS
+    # 1. Stop words check (skip stop-word if user explicitly searched for it)
+    query_lower = (query or "").lower()
+    active_stops = list(stop_words if stop_words is not None else DEFAULT_STOP_WORDS)
+    if stop_words is None and any(m in query_lower for m in IT_QUERY_MARKERS):
+        active_stops.extend(NON_IT_TITLE_STOP_WORDS)
+
     for sw in active_stops:
         sw_clean = sw.strip().lower()
-        if sw_clean and sw_clean in title_lower:
+        if not sw_clean or sw_clean in query_lower:
+            continue
+        if sw_clean in title_lower:
             return False, f"Заголовок содержит стоп-слово '{sw}'"
 
     if not require_keyword_match:
