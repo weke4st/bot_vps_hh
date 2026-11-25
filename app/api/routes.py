@@ -452,19 +452,110 @@ async def hh_login_cancel(user: User = Depends(get_current_user)) -> StandardRes
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+async def _build_settings_response(session: AsyncSession, user: User) -> SettingsResponse:
+    """Build SettingsResponse combining user DB overrides with config defaults."""
+    settings = get_settings()
+
+    async def _int_override(key: str, default: int) -> int:
+        val = await get_setting(session, user.id, key)
+        if val is not None:
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                pass
+        return default
+
+    max_hour = await _int_override("max_applications_per_hour", settings.max_applications_per_hour)
+    max_day = await _int_override("max_applications_per_day", settings.max_applications_per_day)
+    min_delay = await _int_override("min_delay_between_applies_sec", settings.min_delay_between_applies_sec)
+    max_delay = await _int_override("max_delay_between_applies_sec", settings.max_delay_between_applies_sec)
+    interval_mins = await _int_override("search_interval_minutes", settings.search_interval_minutes)
+
+    return SettingsResponse(
+        max_applications_per_hour=max_hour,
+        max_applications_per_day=max_day,
+        min_delay_between_applies_sec=min_delay,
+        max_delay_between_applies_sec=max_delay,
+        search_interval_minutes=interval_mins,
+        search_query=user.search_query or settings.search_query,
+        search_region=user.search_region or settings.search_region,
+        salary_from=settings.salary_from,
+        experience=settings.experience,
+        work_format=settings.work_format,
+        target_salary=user.target_salary or "180000",
+        llm_provider=settings.llm_provider,
+        gigachat_auth_key_masked=_mask_secret(user.gigachat_auth_key),
+        gigachat_scope=user.gigachat_scope or settings.gigachat_scope,
+        gigachat_model=settings.gigachat_model,
+        deepseek_api_key_masked=_mask_secret(settings.deepseek_api_key.get_secret_value()),
+        deepseek_model=settings.deepseek_model,
+        llm_temperature=settings.llm_temperature,
+        llm_max_tokens=settings.llm_max_tokens,
+        ocr_endpoint=settings.ocr_endpoint,
+        ocr_model=settings.ocr_model,
+        ocr_max_retries=settings.ocr_max_retries,
+    )
+
+
 @router.get(
     "/user/settings",
     response_model=UserResponse,
     summary="Get user-specific settings and credentials",
 )
-@router.get(
-    "/settings",
-    response_model=UserResponse,
-    summary="Get user-specific settings (alias)",
-)
 async def get_user_settings(user: User = Depends(get_current_user)) -> UserResponse:
     """Return user configuration."""
     return _user_to_response(user)
+
+
+@router.get(
+    "/settings",
+    response_model=SettingsResponse,
+    summary="Get rate limits, timings, and system settings",
+)
+async def get_system_settings(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session_dep),
+) -> SettingsResponse:
+    """Return rate limits, timings, and general settings for the current user."""
+    return await _build_settings_response(session, user)
+
+
+@router.put(
+    "/settings",
+    response_model=SettingsResponse,
+    summary="Update rate limits, timings, and system settings",
+)
+async def update_system_settings(
+    payload: SettingsUpdateRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session_dep),
+) -> SettingsResponse:
+    """Persist rate limits and timings for the current user in the settings table."""
+    if payload.max_applications_per_hour is not None:
+        val = max(1, payload.max_applications_per_hour)
+        await set_setting(session, user.id, "max_applications_per_hour", str(val))
+    if payload.max_applications_per_day is not None:
+        val = max(1, payload.max_applications_per_day)
+        await set_setting(session, user.id, "max_applications_per_day", str(val))
+    if payload.min_delay_between_applies_sec is not None:
+        val = max(15, payload.min_delay_between_applies_sec)
+        await set_setting(session, user.id, "min_delay_between_applies_sec", str(val))
+    if payload.max_delay_between_applies_sec is not None:
+        val = max(20, payload.max_delay_between_applies_sec)
+        await set_setting(session, user.id, "max_delay_between_applies_sec", str(val))
+    if payload.search_interval_minutes is not None:
+        val = max(5, payload.search_interval_minutes)
+        await set_setting(session, user.id, "search_interval_minutes", str(val))
+        await set_setting(session, "search_interval_minutes", str(val))
+        try:
+            from app.scheduler.service import scheduler_service
+            scheduler_service.reschedule(val)
+        except Exception as exc:
+            logger.debug("Could not reschedule job on settings update: %s", exc)
+
+    await session.commit()
+    logger.info("User #%d rate limits and timings updated", user.id)
+    return await _build_settings_response(session, user)
 
 
 @router.post(

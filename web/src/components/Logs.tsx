@@ -126,7 +126,7 @@ export const Logs: React.FC<LogsProps> = ({ logs, onClearLogs, connected }) => {
               className="flex items-start space-x-2 py-0.5 hover:bg-slate-900/60 rounded px-1"
             >
               <span className="text-slate-600 whitespace-nowrap">
-                {new Date(log.timestamp).toLocaleTimeString()}
+                {new Date(log.timestamp).toLocaleTimeString("ru-RU", { timeZone: "Europe/Moscow" })}
               </span>
               <span className="whitespace-nowrap">{getLevelBadge(log.level)}</span>
               <span className="text-slate-500 whitespace-nowrap">

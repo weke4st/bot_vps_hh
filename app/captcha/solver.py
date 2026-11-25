@@ -19,7 +19,8 @@ from app.db.repositories import create_captcha_attempt
 logger = logging.getLogger(__name__)
 
 CAPTCHA_PROMPT = (
-    "Распознай текст на изображении. Верни только текст без пояснений и кавычек. "
+    "Распознай текст на изображении капчи (латинские буквы и/или цифры). "
+    "Верни только распознанный текст без пояснений и кавычек. "
     "Если текст нечитаем — верни пустую строку."
 )
 
@@ -90,9 +91,10 @@ class PaddleOCRSolver:
                         file_id = up_resp.json().get("id")
                         c_prompt = (
                             "Внимательно прочитай текст на изображении капчи (CAPTCHA). "
-                            "Текст может быть на русском или английском языке. "
+                            "Текст на английском языке (латинские буквы и/или цифры) или на русском языке. "
+                            "Если на изображении латинские буквы — выводи строго латинские буквы, не заменяй их на похожие кириллические. "
                             "Передай в точности написанные буквы и слова, символ за символом, не исправляй опечатки и не заменяй незнакомые слова на словарные. "
-                            "Выведи только распознанный текст капчи строчными буквами через пробел, без кавычек и знаков препинания."
+                            "Выведи только распознанный текст капчи строчными буквами, без кавычек и знаков препинания."
                         )
                         c_payload = {
                             "model": "GigaChat-Pro",
@@ -182,8 +184,24 @@ class PaddleOCRSolver:
 
         max_attempts = self.settings.ocr_max_retries
 
-        # NOTE: Do NOT switch language to English! Russian words on hh.ru captcha have far higher
-        # recognition accuracy and lower hallucination rate in GigaChat-Pro.
+        lang_sel = captcha_cfg.get(
+            "language",
+            "[data-qa='captcha-language'], button:has-text('English'), a:has-text('English')",
+        )
+        try:
+            lang_btns = await page.query_selector_all(lang_sel)
+            for lang_btn in lang_btns:
+                if not await lang_btn.is_visible():
+                    continue
+                lang_txt = (await lang_btn.inner_text() or "").strip().lower()
+                lang_aria = (await lang_btn.get_attribute("aria-label") or "").lower()
+                if "english" in lang_txt or "english" in lang_aria or lang_txt == "eng":
+                    logger.info("Switching CAPTCHA language to English (%r)...", lang_txt)
+                    await human_click(page, lang_btn)
+                    await random_pause(min_s=0.8, max_s=1.5)
+                    break
+        except Exception as lang_err:
+            logger.debug("Could not switch CAPTCHA language to English: %s", lang_err)
 
         for attempt in range(1, max_attempts + 1):
             logger.info("CAPTCHA solving attempt %d of %d", attempt, max_attempts)

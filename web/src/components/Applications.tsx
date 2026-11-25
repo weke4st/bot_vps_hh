@@ -181,6 +181,7 @@ export const Applications: React.FC = () => {
                       <td className="px-5 py-4 text-slate-400 text-xs">
                         {app.sent_at
                           ? new Date(app.sent_at).toLocaleString("ru-RU", {
+                              timeZone: "Europe/Moscow",
                               day: "2-digit",
                               month: "short",
                               hour: "2-digit",

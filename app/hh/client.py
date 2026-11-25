@@ -418,144 +418,17 @@ class HHClient:
                 await random_pause(min_s=1.0, max_s=2.0)
 
             # 9. Fill and submit cover letter
-            form_cfg = self.selectors.get("apply_form", {})
-            toggle_sel = form_cfg.get(
-                "cover_letter_toggle",
-                "[data-qa='responded-success-attach-cover-letter'], [data-qa='vacancy-response-letter-toggle'], [data-qa='vacancy-response-popup-letter'], [data-qa*='cover-letter'], [data-qa*='letter-toggle'], [data-qa*='add-letter'], button:has-text('сопроводительное'), a:has-text('сопроводительное'), button:has-text('письмо'), a:has-text('письмо')",
-            )
-            textarea_sel = form_cfg.get(
-                "cover_letter_textarea",
-                "textarea[data-qa='vacancy-response-popup-form-letter-input'], [data-qa='vacancy-response-letter-text'], [data-qa*='magritte-textarea'], textarea[name='letter'], textarea[placeholder*='сопроводит'], [data-qa*='letter'] textarea, textarea",
-            )
-            submit_sel = form_cfg.get(
-                "submit_button",
-                "[data-qa='vacancy-response-submit-popup'], [data-qa='vacancy-response-letter-submit'], [data-qa='vacancy-response-submit'], button:has-text('Отправить'), button:has-text('Откликнуться')",
-            )
-
             letter_attached = False
-
             if cover_letter:
-                bot_state.set_running(
-                    action="Прикрепление сопроводительного письма", vacancy=vacancy.title
+                letter_attached = await self._try_attach_cover_letter(
+                    page=page,
+                    cover_letter=cover_letter,
+                    vacancy=vacancy,
+                    application=application,
+                    session=session,
+                    has_questions=has_questions,
+                    max_polls=16,
                 )
-                letter_input = None
-
-                # Poll up to 6 seconds for toggle button or direct textarea
-                for _ in range(8):
-                    # Check if textarea is already visible
-                    cand_ta = await page.query_selector(textarea_sel)
-                    if cand_ta and await cand_ta.is_visible():
-                        letter_input = cand_ta
-                        break
-
-                    # Check if toggle button appeared (e.g. after 1-click apply AJAX completes)
-                    toggle_btn = await page.query_selector(toggle_sel)
-                    if toggle_btn and await toggle_btn.is_visible():
-                        logger.info("Found cover letter toggle button, opening input...")
-                        await human_click(page, toggle_btn)
-                        await random_pause(min_s=0.8, max_s=1.5)
-                        # Re-check textarea
-                        cand_ta = await page.query_selector(textarea_sel)
-                        if cand_ta and await cand_ta.is_visible():
-                            letter_input = cand_ta
-                            break
-
-                    await asyncio.sleep(0.7)
-
-                if letter_input:
-                    logger.info("Entering cover letter into textarea...")
-                    await human_typing(page, letter_input, cover_letter)
-                    await random_pause(min_s=0.8, max_s=1.5)
-
-                    # Ensure text is properly recognized by React/Magritte state
-                    try:
-                        cur_val = await letter_input.input_value()
-                        if not cur_val or len(cur_val.strip()) < 10:
-                            logger.info("Textarea value short/empty after typing, applying fill()...")
-                            await letter_input.fill(cover_letter)
-                        await letter_input.dispatch_event("input")
-                        await letter_input.dispatch_event("change")
-                    except Exception as ev_err:
-                        logger.debug("Failed to dispatch input/change events: %s", ev_err)
-
-                    # Submit the letter with exhaustive selectors
-                    submit_candidates = [
-                        "[data-qa='vacancy-response-letter-submit']",
-                        "[data-qa='vacancy-response-submit-popup']",
-                        "[data-qa='vacancy-response-submit']",
-                        "[data-qa*='letter-submit']",
-                        "[data-qa*='bottom-sheet'] button:has-text('Прикрепить')",
-                        "[data-qa*='bottom-sheet'] button:has-text('Отправить')",
-                        "[data-qa*='bottom-sheet'] button:has-text('Сохранить')",
-                        "[data-qa*='bottom-sheet'] button:has-text('Откликнуться')",
-                        "[class*='bottom-sheet'] button:has-text('Прикрепить')",
-                        "[class*='bottom-sheet'] button:has-text('Отправить')",
-                        "[class*='bottom-sheet'] button:has-text('Сохранить')",
-                        "[class*='bottom-sheet'] button:has-text('Откликнуться')",
-                        "[data-qa*='popup'] button:has-text('Прикрепить')",
-                        "[data-qa*='popup'] button:has-text('Отправить')",
-                        "button:has-text('Прикрепить к отклику')",
-                        "button:has-text('Прикрепить')",
-                        "button:has-text('Сохранить')",
-                        "button:has-text('Отправить письмо')",
-                        "button:has-text('Отправить отклик')",
-                        "button:has-text('Отправить')",
-                        "button:has-text('Откликнуться')",
-                        "button[type='submit']",
-                    ]
-
-                    submit_btn = None
-                    for cand_sel in submit_candidates:
-                        try:
-                            btn = await page.query_selector(cand_sel)
-                            if btn and await btn.is_visible():
-                                submit_btn = btn
-                                break
-                        except Exception:
-                            continue
-
-                    if submit_btn:
-                        try:
-                            await submit_btn.scroll_into_view_if_needed()
-                        except Exception:
-                            pass
-                        await human_click(page, submit_btn)
-                        await random_pause(min_s=1.5, max_s=3.0)
-                        logger.info("✓ Cover letter submitted successfully for #%s", vacancy.hh_id)
-                        letter_attached = True
-
-                        # Handle post-cover-letter CAPTCHA immediately
-                        if await self.captcha_solver.detect_captcha(page):
-                            bot_state.set_running(
-                                action="Обнаружена CAPTCHA после отправки письма: решение...",
-                                vacancy=vacancy.title,
-                            )
-                            logger.info("CAPTCHA appeared after cover letter submission for #%s. Solving...", vacancy.hh_id)
-                            solved = await self.captcha_solver.solve_captcha(page, application.id, session)
-                            if solved:
-                                logger.info("✓ CAPTCHA resolved after cover letter submission for #%s", vacancy.hh_id)
-                            else:
-                                logger.warning("Failed to solve CAPTCHA after cover letter submission for #%s", vacancy.hh_id)
-                            await random_pause(min_s=1.5, max_s=2.5)
-                    else:
-                        logger.warning("Cover letter submit button not visible for #%s", vacancy.hh_id)
-                else:
-                    logger.warning(
-                        "Cover letter input not found for vacancy #%s.",
-                        vacancy.hh_id,
-                    )
-
-                if not letter_attached:
-                    logger.warning(
-                        "Vacancy #%s: Cover letter was generated but could NOT be attached on hh.ru! Updating application record.",
-                        vacancy.hh_id,
-                    )
-                    await session.execute(
-                        update(Application)
-                        .where(Application.id == application.id)
-                        .values(cover_letter=f"[НЕ ПРИКРЕПЛЕНО К HH.RU]\n\n{cover_letter}")
-                    )
-                    await session.commit()
 
             # 10. STRICT VERIFICATION & SUBMISSION LOOP
             # On hh.ru, solving a CAPTCHA bottom sheet does NOT auto-submit the underlying form!
@@ -672,6 +545,30 @@ class HHClient:
                 await session.commit()
                 return False
 
+            # Retry cover letter attachment if response only succeeded during Step 10
+            if cover_letter and not letter_attached:
+                letter_attached = await self._try_attach_cover_letter(
+                    page=page,
+                    cover_letter=cover_letter,
+                    vacancy=vacancy,
+                    application=application,
+                    session=session,
+                    has_questions=False,
+                    max_polls=8,
+                )
+
+            if cover_letter and not letter_attached:
+                logger.warning(
+                    "Vacancy #%s: Cover letter was generated but could NOT be attached on hh.ru! Updating application record.",
+                    vacancy.hh_id,
+                )
+                await session.execute(
+                    update(Application)
+                    .where(Application.id == application.id)
+                    .values(cover_letter=f"[НЕ ПРИКРЕПЛЕНО К HH.RU]\n\n{cover_letter}")
+                )
+                await session.commit()
+
             # 10. Application successfully submitted and verified!
             now = datetime.now(timezone.utc)
             await update_application_status(
@@ -685,10 +582,19 @@ class HHClient:
             logger.info("✓ Successfully applied to vacancy #%s (%s)", vacancy.hh_id, vacancy.title)
 
             # 12. Crucial constraint: enforce randomized delay between applications (at least 15s)
+            min_delay_raw = await get_setting(session, self.user_id, "min_delay_between_applies_sec")
+            max_delay_raw = await get_setting(session, self.user_id, "max_delay_between_applies_sec")
+            min_delay_val = int(min_delay_raw) if min_delay_raw is not None else None
+            max_delay_val = int(max_delay_raw) if max_delay_raw is not None else None
+
             bot_state.set_running(
-                action="Пауза безопасности между откликами (мин. 15 сек)..."
+                action=f"Пауза безопасности между откликами (мин. {max(15, min_delay_val or 15)} сек)..."
             )
-            delay = await delay_between_applies(stop_event=stop_event)
+            delay = await delay_between_applies(
+                stop_event=stop_event,
+                min_delay_sec=min_delay_val,
+                max_delay_sec=max_delay_val,
+            )
             logger.info("Safety cooldown delay completed: %.1f seconds", delay)
             return True
 
@@ -713,3 +619,184 @@ class HHClient:
             return False
         finally:
             await self.browser_manager.cleanup_extra_tabs()
+
+    async def _find_cover_letter_textarea(self, page: Page, has_questions: bool = False):
+        """Find visible cover letter textarea without accidentally matching employer test question textareas."""
+        form_cfg = self.selectors.get("apply_form", {})
+        textarea_sel = form_cfg.get(
+            "cover_letter_textarea",
+            "textarea[data-qa='vacancy-response-popup-form-letter-input'], [data-qa='vacancy-response-letter-text'], [data-qa='vacancy-response-popup-form-letter-input'] textarea, textarea[name='letter'], textarea[placeholder*='сопроводит'], [data-qa*='letter'] textarea, textarea[aria-label*='сопроводит']",
+        )
+        # Strip overly generic fallback selectors if present in selectors.yaml
+        specific_parts = [
+            s.strip()
+            for s in textarea_sel.split(",")
+            if s.strip() and s.strip() not in ("textarea", "[data-qa*='magritte-textarea']")
+        ]
+        for sel in specific_parts:
+            try:
+                els = await page.query_selector_all(sel)
+                for el in els:
+                    if await el.is_visible():
+                        return el
+            except Exception:
+                continue
+
+        # Fallback: inspect all visible textareas and pick only one clearly intended for cover letter
+        try:
+            all_tas = await page.query_selector_all("textarea")
+            for ta in all_tas:
+                if not await ta.is_visible():
+                    continue
+                dqa = (await ta.get_attribute("data-qa") or "").lower()
+                name = (await ta.get_attribute("name") or "").lower()
+                ph = (await ta.get_attribute("placeholder") or "").lower()
+                aria = (await ta.get_attribute("aria-label") or "").lower()
+                meta = f"{dqa} {name} {ph} {aria}"
+                if "letter" in meta or "сопроводит" in meta or "письм" in meta:
+                    return ta
+        except Exception:
+            pass
+
+        # Last resort only when there are NO employer questions on the page
+        if not has_questions:
+            try:
+                ta = await page.query_selector("[data-qa*='bottom-sheet'] textarea, [class*='bottom-sheet'] textarea, [data-qa*='popup'] textarea")
+                if ta and await ta.is_visible():
+                    return ta
+            except Exception:
+                pass
+        return None
+
+    async def _try_attach_cover_letter(
+        self,
+        page: Page,
+        cover_letter: str,
+        vacancy: Vacancy,
+        application: Application,
+        session: AsyncSession,
+        has_questions: bool = False,
+        max_polls: int = 16,
+    ) -> bool:
+        """Poll for cover letter input or toggle button, enter text, and submit."""
+        form_cfg = self.selectors.get("apply_form", {})
+        toggle_sel = form_cfg.get(
+            "cover_letter_toggle",
+            "[data-qa='responded-success-attach-cover-letter'], [data-qa='vacancy-response-letter-toggle'], [data-qa='vacancy-response-popup-letter'], [data-qa*='cover-letter'], [data-qa*='letter-toggle'], [data-qa*='add-letter'], button:has-text('сопроводительное'), a:has-text('сопроводительное'), button:has-text('письмо'), a:has-text('письмо')",
+        )
+
+        bot_state.set_running(
+            action="Прикрепление сопроводительного письма", vacancy=vacancy.title
+        )
+        letter_input = None
+
+        for _ in range(max_polls):
+            letter_input = await self._find_cover_letter_textarea(page, has_questions=has_questions)
+            if letter_input:
+                break
+
+            try:
+                toggle_btns = await page.query_selector_all(toggle_sel)
+                for toggle_btn in toggle_btns:
+                    if await toggle_btn.is_visible():
+                        logger.info("Found cover letter toggle button, opening input...")
+                        try:
+                            await toggle_btn.scroll_into_view_if_needed()
+                        except Exception:
+                            pass
+                        await human_click(page, toggle_btn)
+                        await random_pause(min_s=0.8, max_s=1.5)
+                        letter_input = await self._find_cover_letter_textarea(page, has_questions=has_questions)
+                        if letter_input:
+                            break
+            except Exception:
+                pass
+
+            if letter_input:
+                break
+            await asyncio.sleep(0.7)
+
+        if not letter_input:
+            logger.warning("Cover letter input not found for vacancy #%s.", vacancy.hh_id)
+            return False
+
+        try:
+            await letter_input.scroll_into_view_if_needed()
+        except Exception:
+            pass
+
+        logger.info("Entering cover letter into textarea...")
+        await human_typing(page, letter_input, cover_letter)
+        await random_pause(min_s=0.8, max_s=1.5)
+
+        try:
+            cur_val = await letter_input.input_value()
+            if not cur_val or len(cur_val.strip()) < 10:
+                logger.info("Textarea value short/empty after typing, applying fill()...")
+                await letter_input.fill(cover_letter)
+            await letter_input.dispatch_event("input")
+            await letter_input.dispatch_event("change")
+        except Exception as ev_err:
+            logger.debug("Failed to dispatch input/change events: %s", ev_err)
+
+        submit_candidates = [
+            "[data-qa='vacancy-response-letter-submit']",
+            "[data-qa='vacancy-response-submit-popup']",
+            "[data-qa='vacancy-response-submit']",
+            "[data-qa*='letter-submit']",
+            "[data-qa*='bottom-sheet'] button:has-text('Прикрепить')",
+            "[data-qa*='bottom-sheet'] button:has-text('Отправить')",
+            "[data-qa*='bottom-sheet'] button:has-text('Сохранить')",
+            "[data-qa*='bottom-sheet'] button:has-text('Откликнуться')",
+            "[class*='bottom-sheet'] button:has-text('Прикрепить')",
+            "[class*='bottom-sheet'] button:has-text('Отправить')",
+            "[class*='bottom-sheet'] button:has-text('Сохранить')",
+            "[class*='bottom-sheet'] button:has-text('Откликнуться')",
+            "[data-qa*='popup'] button:has-text('Прикрепить')",
+            "[data-qa*='popup'] button:has-text('Отправить')",
+            "button:has-text('Прикрепить к отклику')",
+            "button:has-text('Прикрепить')",
+            "button:has-text('Сохранить')",
+            "button:has-text('Отправить письмо')",
+            "button:has-text('Отправить отклик')",
+            "button:has-text('Отправить')",
+            "button:has-text('Откликнуться')",
+            "button[type='submit']",
+        ]
+
+        submit_btn = None
+        for cand_sel in submit_candidates:
+            try:
+                btn = await page.query_selector(cand_sel)
+                if btn and await btn.is_visible():
+                    submit_btn = btn
+                    break
+            except Exception:
+                continue
+
+        if not submit_btn:
+            logger.warning("Cover letter submit button not visible for #%s", vacancy.hh_id)
+            return False
+
+        try:
+            await submit_btn.scroll_into_view_if_needed()
+        except Exception:
+            pass
+        await human_click(page, submit_btn)
+        await random_pause(min_s=1.5, max_s=3.0)
+        logger.info("✓ Cover letter submitted successfully for #%s", vacancy.hh_id)
+
+        if await self.captcha_solver.detect_captcha(page):
+            bot_state.set_running(
+                action="Обнаружена CAPTCHA после отправки письма: решение...",
+                vacancy=vacancy.title,
+            )
+            logger.info("CAPTCHA appeared after cover letter submission for #%s. Solving...", vacancy.hh_id)
+            solved = await self.captcha_solver.solve_captcha(page, application.id, session)
+            if solved:
+                logger.info("✓ CAPTCHA resolved after cover letter submission for #%s", vacancy.hh_id)
+            else:
+                logger.warning("Failed to solve CAPTCHA after cover letter submission for #%s", vacancy.hh_id)
+            await random_pause(min_s=1.5, max_s=2.5)
+
+        return True

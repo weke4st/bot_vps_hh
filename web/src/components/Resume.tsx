@@ -104,7 +104,7 @@ export const Resume: React.FC = () => {
 
         {updatedAt && (
           <p className="text-[11px] text-slate-500 text-right">
-            Последнее сохранение: {new Date(updatedAt).toLocaleString("ru-RU")}
+            Последнее сохранение: {new Date(updatedAt).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" })}
           </p>
         )}
       </div>

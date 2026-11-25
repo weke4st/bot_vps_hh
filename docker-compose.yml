@@ -28,5 +28,6 @@ services:
     environment:
       - HEADLESS=true
       - LOG_LEVEL=INFO
+      - TZ=Europe/Moscow
     restart: unless-stopped
     shm_size: "2gb" # Chromium needs sufficient shared memory for tabs

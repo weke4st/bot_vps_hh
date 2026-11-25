@@ -102,8 +102,9 @@ export const Settings: React.FC<SettingsProps> = ({
       }
       await updateUserSettings(payload);
 
-      // 2. Update general system settings
-      await updateSettings(formData).catch(() => {});
+      // 2. Update rate limits & timings
+      const updatedSettings = await updateSettings(formData);
+      setFormData(updatedSettings);
 
       if (onUserUpdated) onUserUpdated();
       setSavedSuccess(true);

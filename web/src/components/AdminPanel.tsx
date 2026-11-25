@@ -170,6 +170,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (!iso) return "—";
     try {
       return new Date(iso).toLocaleString("ru-RU", {
+        timeZone: "Europe/Moscow",
         day: "2-digit",
         month: "2-digit",
         year: "numeric",
