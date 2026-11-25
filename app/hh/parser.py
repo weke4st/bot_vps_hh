@@ -40,7 +40,85 @@ DEFAULT_STOP_WORDS = [
     "курьер",
     "оператор колл",
     "call-центр",
+    # Non-IT engineering / plumbing / HVAC / industrial automation / construction
+    "сантехник",
+    "водопровод",
+    "канализац",
+    "отоплен",
+    "теплоснабж",
+    "вентиляц",
+    "кондиционир",
+    "овик",
+    "котельн",
+    "кипиа",
+    "кип и а",
+    "асу тп",
+    "асутп",
+    "плк",
+    "plc",
+    "scada",
+    "электромонтаж",
+    "электрик",
+    "электромеханик",
+    "электроэнергет",
+    "энергетик",
+    "слесарь",
+    "монтажник",
+    "наладчик",
+    "пусконалад",
+    "пнр",
+    "сварщик",
+    "токарь",
+    "фрезеровщик",
+    "чпу",
+    "механик",
+    "автомеханик",
+    "слаботоч",
+    "пожарн",
+    "скуд",
+    "видеонаблюден",
+    "умный дом",
+    "жкх",
+    "строител",
+    "прораб",
+    "сметчик",
+    "кладовщик",
+    "водитель",
+    "продавец",
+    "кассир",
 ]
+
+NON_IT_DESCRIPTION_MARKERS = [
+    "сантехник",
+    "водопровод",
+    "канализац",
+    "водоснабжен",
+    "теплоснабжен",
+    "отоплени",
+    "вентиляци",
+    "котельн",
+    "кипиа",
+    "кип и а",
+    "асу тп",
+    "асутп",
+    "scada",
+    "плк",
+    "пусконалад",
+    "электромонтаж",
+    "электрощит",
+    "трубопровод",
+    "жкх",
+    "слесарн",
+    "монтаж систем",
+    "умный дом",
+]
+
+IT_QUERY_MARKERS = {
+    "devops", "девопс", "sre", "сри", "devsecops", "sysadmin", "сисадмин",
+    "qa", "sdet", "тестиров", "backend", "frontend", "fullstack", "developer",
+    "разработчик", "программист", "python", "golang", "java", "kubernetes",
+    "linux", "platform", "mlops", "data",
+}
 
 _COMMON_QUERY_STOPWORDS = {
     "or", "and", "not", "и", "или", "для", "на", "в", "с", "по", "от",
@@ -52,15 +130,13 @@ ROLE_SYNONYMS: dict[str, list[str]] = {
     # DevOps, SRE, Infrastructure, Automation
     "devops": [
         "devops", "девопс", "sre", "сри",
-        "автоматизац", "automation",
         "инфраструктур", "infrastructure",
         "platform", "платформ",
         "cloud", "облачн",
         "ci/cd", "cicd", "ci-cd",
-        "release", "релиз",
         "reliability", "надежност",
         "системный инженер", "системный администратор linux", "linux administrator", "сисадмин linux",
-        "devsecops", "девсекопс", "kubernetes", "k8s",
+        "devsecops", "девсекопс", "kubernetes", "k8s", "linux", "docker", "terraform", "ansible",
     ],
     "sre": [
         "sre", "сри", "devops", "девопс",
@@ -105,7 +181,7 @@ def expand_query_for_hh(query: str) -> str:
 
     q_lower = query.strip().lower()
     if q_lower in ("devops", "девопс", "devops sre", "devops / sre"):
-        return 'DevOps OR SRE OR "инженер по автоматизации" OR "platform engineer" OR "инженер инфраструктуры"'
+        return 'DevOps OR SRE OR DevSecOps OR "platform engineer" OR "инженер инфраструктуры" OR "инженер CI/CD"'
     elif q_lower in ("qa", "тестировщик", "qa engineer"):
         return 'QA OR Тестировщик OR "инженер по тестированию" OR SDET'
     elif q_lower in ("sysadmin", "сисадмин", "системный администратор"):
@@ -159,6 +235,20 @@ def is_vacancy_relevant(
     matched = any(kw in title_lower for kw in keywords)
     if not matched:
         return False, f"Заголовок не содержит ключевых слов или смежных специальностей ({', '.join(sorted(list(keywords))[:5])}...)"
+
+    return True, "OK"
+
+
+def is_description_it_relevant(title: str, description: str, query: str) -> tuple[bool, str]:
+    """Filter out non-IT vacancies (plumbing, HVAC, industrial PLC/SCADA) when searching for IT roles."""
+    q_low = (query or "").lower()
+    if not any(m in q_low for m in IT_QUERY_MARKERS):
+        return True, "OK"
+
+    combined = f"{title}\n{description}".lower()
+    for marker in NON_IT_DESCRIPTION_MARKERS:
+        if marker in combined:
+            return False, f"Описание содержит не-IT маркер '{marker}'"
 
     return True, "OK"
 

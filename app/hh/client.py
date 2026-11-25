@@ -34,7 +34,7 @@ from app.db.repositories import (
     upsert_daily_stats,
     upsert_vacancy,
 )
-from app.hh.parser import SearchParser, build_search_url, is_vacancy_relevant
+from app.hh.parser import SearchParser, build_search_url, is_description_it_relevant, is_vacancy_relevant
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +258,22 @@ class HHClient:
                 vacancy.salary = (await sal_el.inner_text()).strip()
 
             await session.commit()
+
+            # 1.5. Check full description for non-IT markers (e.g. plumbing, HVAC, PLC/SCADA)
+            is_desc_ok, desc_reason = is_description_it_relevant(
+                vacancy.title, vacancy.description or "", query
+            )
+            if not is_desc_ok:
+                logger.info(
+                    "User #%d: пропуск не-IT вакансии #%s ('%s'): %s",
+                    self.user_id,
+                    vacancy.hh_id,
+                    vacancy.title,
+                    desc_reason,
+                )
+                await update_vacancy_status(session, vacancy.id, VacancyStatus.manual)
+                await session.commit()
+                return False
 
             # 2. Check if already applied
             already_applied_sel = vac_cfg.get(
